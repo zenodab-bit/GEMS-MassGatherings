@@ -31,7 +31,7 @@ n_simulations = 3
 run_validation = true
 
 events = sample_events(event_config, rng)
-# assign_events! requires chronological order — see its header comment in 3_Population.jl
+# sorted for readable output; assign_events! orders dates itself
 sort!(events, by = e -> (e.date, e.category_id, e.draw_id, e.section_id))
 
 println("\n=== Sampled Events ===")
@@ -48,7 +48,7 @@ for e in events
 end
 
 people, age_groups, sex_levels = prepare_population(event_config, rng)
-attendees = assign_events!(people, events, event_config, rng)
+attendees, core_groups = assign_events!(people, events, event_config, rng)
 
 transmission_func = SettingRate(
     general_rate = general_rate,

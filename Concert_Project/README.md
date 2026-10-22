@@ -16,6 +16,9 @@ Running a simulation
 
     Reading validation output (7_Validation): "n/a" for a Z-score means there's only one
         simulation replicate, so there's no variance to compare against; it is not an error.
+        The "Infected" row is the exception: its std comes from a binomial model, not from
+        replicates, so it always has a Z-score. That std is a lower bound (it ignores
+        variation in contacts and infectiousness), so treat large Z-scores there with care.
 
 
 The idea behind this code is to integrate the GEMS code to be able to have events
@@ -72,9 +75,7 @@ Then it moves to file 1_UserConfig.
             NOTE: Events of the same category cannot happen on the same day. The code will
                 check and try to pick different dates but it needs to have enough options.
             NOTE: Different categories CAN land on the same date by coincidence. If that happens
-                and it creates a conflict (someone eligible for both), whichever category's event
-                gets processed first that day wins the person; the other backfills from its random
-                pool instead.
+                and it creates a conflict (someone eligible for both), all events of a date are filled together, core first, then loyalty, then random. So a category can never take another's core members, and its random fill can't take another's loyal attendees.
             NOTE: A person can also attend events from more than one category on different days.
                 Nothing ties someone to a single category. Being core/loyal to one category doesn't
                 exclude someone from being randomly drawn into another's events too.
@@ -95,16 +96,20 @@ Then it moves to file 1_UserConfig.
         sex weights: the sex distribution of the participants to events of this type.
             Sex weights dont have to sum up to 1, they are proper weights. As such, the true
                 distribution of sex at the event may be slightly different.
-        core: this represent what percentage is attending every single event.
-            It is calculated on the smallest event of that category that has been generated, to
-                guarantee that all the members are always attending.
+        core: what fraction of each draw's attendees attends every draw of the category.
+            It is calculated on the smallest draw (all sections together) that has been
+                generated, so all members always fit.
+            With section_mode = :section it is calculated on each section's smallest size
+                instead, so every home section always fits. This gives a slightly smaller core.
             The regular part follows the demographic distributions; the superspreader part
                 (below) is picked uniformly at random instead, not demographically weighted.
             A person can be core for at most one category, never two at once.
+            With several sections, placement depends on section_mode.
         loyalty: this represent what percentage of the remaining non-core spots are reserved for
             people that already attended at least one non-core event of that category, core excluded.
             This pool only grows and never expires. Selection follows the demographic weights too;
                 attending more times before doesn't give extra weight.
+            With several sections, placement depends on section_mode.
         min_superspreaders: As is our interest to check the worst cases, it is possible to pick
             how many superspreader minimum have to attend. Extras could be picked at random later.
         cross_section_mean_contacts: How many contacts a person in one section can have with a
@@ -112,16 +117,19 @@ Then it moves to file 1_UserConfig.
             NOTE: This is the same value distributed across all sections.
             NOTE: This are added on top of the contacts intra section and can still contact
                 in the same section.
+        section_mode entry. :event (the default) places core and loyal members in a random section at every draw, in proportion to
+            section size. :section gives core members a fixed home section, and loyal attendees go back to their last section.
 
         NOTE: Superspreaders and core are picked ONCE per category, before any of its events are
             processed, not "for the first event" specially. The same core then attends every
             event of that category from the first one on, minus same-day conflicts.
-            For each event, the order is: core first, then loyalty (demographic weights), then
-                random fill (demographic weights) for whatever's left. Anyone filled by loyalty
-                OR by random fill becomes loyalty-eligible for that category's later events.
+            Events are filled date by date: core of every event, then loyalty of every event, then random fill
+                of every event.
+                Anyone filled by loyalty OR by random fill becomes loyalty-eligible for that category's later events.
 
         NOTE: validate_config (run automatically after event_config is built, see below) catches
-            common mistakes like wrong-length weight lists, inverted ranges, and core outside [0,1], but
+            common mistakes like wrong-length weight lists, inverted ranges, core outside [0,1], and
+            more min_superspreaders than the smallest possible draw can hold, but
             not everything is checked. See its comments in 0_Helpers for the current list of what
             is and isn't validated.
 

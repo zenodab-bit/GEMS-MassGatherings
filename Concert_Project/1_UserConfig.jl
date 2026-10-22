@@ -35,7 +35,7 @@ category_1 = Category(
         Section(id=1, name="seated", n_range=(300,500), mean_contacts=4.0, std_contacts=6.0),
         Section(id=2, name="standing", n_range=(800,1000), mean_contacts=12.0, std_contacts=18.0)
     ],
-    n_draws = 2,
+    n_draws = 1,
     min_age = 18,
     max_age = 999,
     age_weights = [0.5, 0.35, 0.15],
@@ -44,7 +44,8 @@ category_1 = Category(
     loyalty = 0.0,
     min_superspreaders = 0,
     cross_section_mean_contacts = 1.0,
-    cross_section_std_contacts = 2.0
+    cross_section_std_contacts = 2.0,
+    section_mode = :event   # :event or :section
 )
 
 # sport: small guaranteed core group (10%) including at least 1 superspreader, recurs 5 times
@@ -55,7 +56,7 @@ category_2 = Category(
     sections = [
         Section(id=1, name="", n_range=(300,400), mean_contacts=8.0, std_contacts=12.0)
     ],
-    n_draws = 5,
+    n_draws = 0,
     min_age = 16,
     max_age = 999,
     age_weights = [0.45, 0.40, 0.15],

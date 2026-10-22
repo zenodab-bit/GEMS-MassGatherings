@@ -98,9 +98,11 @@ function plot_cases_by_setting(bd, events, run_folder)
 
     all_setting_cases = Dict{Char,Vector{Vector{Float64}}}()
 
+    # same length for every replicate, so they can be stacked even when one
+    # run's last infection comes earlier than another's
+    n_ticks = maximum(maximum(infections(rd).tick) for rd in runs(bd))
     for rd in runs(bd)
         inf_log = infections(rd)
-        n_ticks = maximum(inf_log.tick)
         tick_setting = combine(groupby(inf_log, [:tick, :setting_type]), nrow => :daily_cases)
 
         for s in keys(setting_labels)
@@ -186,6 +188,39 @@ function plot_infected_boxplot(event_results, events, run_folder)
     println("Saved: infected_boxplot")
 end
 
+# Like the old sitting/standing boxplot: one panel per (category, section),
+# one box per draw at its date. rate=true plots % of attendees instead of
+# counts, since n differs between draws. Saved to infected_by_section.png.
+function plot_infected_by_section(event_results, events, event_config, run_folder; rate=true)
+    panels = []
+    for (cat_id, sec_id) in unique((e.category_id, e.section_id) for e in events)
+        category = event_config.categories[findfirst(c -> c.id == cat_id, event_config.categories)]
+        section = category.sections[findfirst(s -> s.id == sec_id, category.sections)]
+        cat_label = isempty(category.name) ? "category $cat_id" : category.name
+        sec_label = !isempty(section.name) ? section.name :
+                    length(category.sections) > 1 ? "sec$sec_id" : ""
+        title = isempty(sec_label) ? cat_label : "$cat_label ($sec_label)"
+
+        days = Int[]
+        vals = Float64[]
+        for e in filter(e -> e.category_id == cat_id && e.section_id == sec_id, events)
+            v = Float64[r[e.id].infected_at_event for r in event_results]
+            rate && (v .*= 100 / e.n)
+            append!(vals, v)
+            append!(days, fill(e.date, length(v)))
+        end
+
+        # boxplot needs >1 replicate to mean anything; single run falls back to points
+        plotfn = length(event_results) > 1 ? boxplot : scatter
+        push!(panels, plotfn(days, vals, title=title, xlabel="Event day",
+            ylabel=rate ? "Infected (% of attendees)" : "Infected",
+            xticks=unique(days), legend=false))
+    end
+
+    p = plot(panels..., layout=(length(panels), 1), size=(800, 350 * length(panels)), dpi=300)
+    savefig(p, "$run_folder/infected_by_section.png")
+    println("Saved: infected_by_section")
+end
 
 # === Auto-generate ===
 print_metrics(aggregated, events, bd, run_folder)
@@ -193,6 +228,7 @@ plot_epidemic_overview(bd, events, run_folder)
 plot_cases_by_setting(bd, events, run_folder)
 plot_event_seir(aggregated, events, run_folder)
 plot_infected_boxplot(event_results, events, run_folder)
+plot_infected_by_section(event_results, events, event_config, run_folder)
 
 println("\nAnalysis complete. Results saved to $run_folder")
 println("Analysis")

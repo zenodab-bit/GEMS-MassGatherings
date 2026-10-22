@@ -86,11 +86,16 @@ end
     max_age::Int = 999
     age_weights::Vector{Float64} = Float64[]    # overrides EventConfig.age_dist if non-empty
     sex_weights::Vector{Float64} = Float64[]    # overrides EventConfig.sex_dist if non-empty
-    core::Float64 = 0.0                         # fraction (0-1) of the smallest event's size that always attends every draw
+    core::Float64 = 0.0                         # fraction (0-1) of the smallest draw (all sections together) that attends every draw
     loyalty::Float64 = 0.0                      # guaranteed, demographically-weighted fraction of non-core spots for past non-core attendees; pool never expires, no extra weight for repeat attendance
     min_superspreaders::Int = 0                 # guaranteed superspreaders in the core group, if enough are available
     cross_section_mean_contacts::Float64 = 0.0  # contacts with attendees of other sections of the same draw; 0 keeps sections isolated
     cross_section_std_contacts::Float64 = 0.0
+    # Where core and loyal members go when there are several sections (no
+    # effect with a single section):
+    #   :event   - placed in a random section at every draw, in proportion to section size
+    #   :section - core keep a fixed home section; loyal attendees return to their last section
+    section_mode::Symbol = :event
 end
 
 # The whole simulation's event setup.
@@ -107,7 +112,7 @@ end
     id::String                # unique, "$(category_id)_$(draw)_$(section_id)"
     name::String               # human-readable, NOT guaranteed unique
     category_id::Int
-    draw_id::Int                # which recurrence (1..n_draws), not a global counter
+    draw_id::Int                # which recurrence (1..n_draws, in date order), not a global counter
     section_id::Int
     date::Int
     n::Int                      # target attendee count
@@ -125,7 +130,8 @@ end
 # Verifies age_dist/sex_dist have the right length for age_boundaries, age_dist
 # sums to ~1.0, each category's age_weights/sex_weights (if given) have
 # the right length, min_age <= max_age, date_range and each section's
-# n_range aren't inverted, and category.core is within [0, 1].
+# n_range aren't inverted, category.core is within [0, 1], and
+# min_superspreaders fits in the smallest possible draw.
 function validate_config(event_config::EventConfig)
     n_groups = length(event_config.age_boundaries) + 1
 
@@ -163,6 +169,15 @@ function validate_config(event_config::EventConfig)
         # core > 1 silently oversizes the core group rather than erroring elsewhere
         0.0 <= category.core <= 1.0 ||
             error("Category $(category.name): core ($(category.core)) must be between 0 and 1.")
+
+        category.section_mode in (:event, :section) ||
+            error("Category $(category.name): section_mode must be :event or :section, got :$(category.section_mode).")
+
+        # superspreaders join the core, and core attends every draw: more of
+        # them than the smallest possible draw would overflow every event
+        min_draw = sum(s.n_range[1] for s in category.sections; init=0)
+        category.min_superspreaders <= min_draw ||
+            error("Category $(category.name): min_superspreaders ($(category.min_superspreaders)) exceeds the smallest possible draw ($min_draw, the sum of each section's n_range[1]); the core would overflow the event.")
     end
 
     println("Config validated OK.")
