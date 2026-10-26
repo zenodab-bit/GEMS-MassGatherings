@@ -3,15 +3,15 @@
 1. Install Julia 1.12 (the project was built with 1.12.5): https://julialang.org/downloads
 2. Download the code and enter the folder (or download the ZIP from the GitHub page, after selecting the `multi-event-fixes` branch):
    ```
-   git clone -b multi-event-fixes https://github.com/zenodab-bit/GemsZeno.git
-   cd GemsZeno
+   git clone -b multi-event-fixes https://github.com/zenodab-bit/GEMS-MassGatherings.git
+   cd GEMS-MassGatherings
    ```
 3. Install the packages:
    ```
    julia setup.jl
    ```
    This installs the exact package versions recorded in `Manifest.toml`, GEMS included. Do not run `Pkg.update()`: it moves GEMS and the other packages to their newest versions, which may not work with this code.
-4. Run a simulation, from the `GemsZeno` folder:
+4. Run a simulation, from the `GEMS-MassGatherings` folder:
    ```
    julia Concert_Project/2_Interface.jl
    ```
