@@ -1,3 +1,27 @@
+Setup (once per machine)
+    1. Install Julia 1.12 (the project was built with 1.12.5): https://julialang.org/downloads
+    Setup (once per machine)
+    1. Install Julia 1.12 (the project was built with 1.12.5): https://julialang.org/downloads
+    2. Download the code (or download the ZIP from the GitHub page) and enter the folder:
+        git clone https://github.com/zenodab-bit/GemsZeno.git
+        cd GemsZeno
+    3. Install the packages:
+        julia setup.jl
+        This installs the exact package versions recorded in Manifest.toml, GEMS included.
+        Do not run Pkg.update(): it moves GEMS and the other packages to their newest
+            versions, which may not work with this code.
+    4. Run a simulation, from the GemsZeno folder:
+        julia Concert_Project/2_Interface.jl
+        Results are saved in Results/, inside the folder Julia was started from.
+    3. Install the packages:
+        julia setup.jl
+        This installs the exact package versions recorded in Manifest.toml, GEMS included.
+        Do not run Pkg.update(): it moves GEMS and the other packages to their newest
+            versions, which may not work with this code.
+    4. Run a simulation, from the GemsZeno folder:
+        julia Concert_Project/2_Interface.jl
+        Results are saved in Results/, inside the folder Julia was started from.
+
 Running a simulation
     To configure a simulation, edit 1_UserConfig (see below for what each field does) and,
         if needed, the two settings at the top of 2_Interface: n_simulations (how many
