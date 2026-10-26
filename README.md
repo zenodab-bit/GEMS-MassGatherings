@@ -7,9 +7,9 @@ Event contacts are extra contacts: GEMS calculates each person's contacts in the
 ## Setup (once per machine)
 
 1. Install Julia 1.12 (the project was built with 1.12.5): https://julialang.org/downloads
-2. Download the code and enter the folder (or download the ZIP from the GitHub page, after selecting the `multi-event-fixes` branch):
+2. Download the code and enter the folder (or download the ZIP from the GitHub page):
    ```
-   git clone -b multi-event-fixes https://github.com/zenodab-bit/GEMS-MassGatherings.git
+   git clone https://github.com/zenodab-bit/GEMS-MassGatherings.git
    cd GEMS-MassGatherings
    ```
 3. Install the packages:
