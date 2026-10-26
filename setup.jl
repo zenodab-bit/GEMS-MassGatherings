@@ -1,8 +1,5 @@
-# setup.jl — run once per machine to configure the environment
+# setup.jl: run once per machine to install the exact package versions in Manifest.toml
 import Pkg
-Pkg.activate(".")
-Pkg.add(url="https://github.com/IMMIDD/GEMS")
-Pkg.add(["Parameters", "DataFrames", "Distributions", "CSV", 
-         "CategoricalArrays", "JLD2", "StatsBase", "Plots", "StatsPlots",
-         "XLSX", "FileIO"])
+Pkg.activate(@__DIR__)
+Pkg.instantiate()
 println("Setup complete! You can now run the simulations.")
