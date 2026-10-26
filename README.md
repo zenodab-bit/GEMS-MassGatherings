@@ -1,3 +1,9 @@
+# GEMS-MassGatherings
+
+An extension of the [GEMS](https://github.com/IMMIDD/GEMS) epidemic simulator that adds mass gathering events (festivals, concerts, sport) on top of the normal GEMS settings.
+
+Event contacts are extra contacts: GEMS calculates each person's contacts in the normal settings (household, office, school, etc.) without considering their participation in events, and the event contacts are added on top. Events run through GEMS's global setting, which contains the entire population, so large populations are slow. Various precautions have been taken to keep it efficient, but it has not been tested on populations larger than Saalekreis.
+
 ## Setup (once per machine)
 
 1. Install Julia 1.12 (the project was built with 1.12.5): https://julialang.org/downloads
@@ -17,196 +23,87 @@
    ```
    Results are saved in `Results/`, inside the folder Julia was started from.
 
-Running a simulation
-    To configure a simulation, edit 1_UserConfig (see below for what each field does) and,
-        if needed, the two settings at the top of 2_Interface: n_simulations (how many
-        replicates to run) and run_validation (whether to run the checks in 7_Validation).
-    Then run 2_Interface.
+## Running a simulation
 
-    Reproducibility: the same seed (set in the TOML) reproduces the same population, events,
-        and assignment every time. It does NOT reproduce the same epidemic outcome: GEMS's
-        own internal randomness for the actual disease spread is separate and not tied to
-        this seed. Re-running with the same seed gives the same setup, not the same result.
+1. Configure the simulation in `Concert_Project/1_UserConfig.jl` (see [Configuring events](#configuring-events) below).
+2. If needed, change the two settings in `Concert_Project/2_Interface.jl`: `n_simulations` (how many replicates to run) and `run_validation` (whether to run the checks in `7_Validation.jl`).
+3. Run `2_Interface.jl`, as in step 4 of the setup.
 
-    Every event's date must fall within the simulation's length (StopCriterion.limit in the
-        TOML). If a category's date_range allows a date beyond that, 2_Interface warns but
-        still runs. Results for that event will be inaccurate, since the simulation ends
-        before that day is reached.
+**Reproducibility.** The same seed (set in the TOML) reproduces the same population, events and assignment every time. It does not reproduce the same epidemic outcome: GEMS's own randomness for the disease spread is separate and not tied to this seed. Re-running with the same seed gives the same setup, not the same result.
 
-    Reading validation output (7_Validation): "n/a" for a Z-score means there's only one
-        simulation replicate, so there's no variance to compare against; it is not an error.
-        The "Infected" row is the exception: its std comes from a binomial model, not from
-        replicates, so it always has a Z-score. That std is a lower bound (it ignores
-        variation in contacts and infectiousness), so treat large Z-scores there with care.
+**Event dates.** Every event's date must fall within the simulation's length (`StopCriterion.limit` in the TOML). If a category's `date_range` allows a later date, `2_Interface.jl` warns but still runs. Results for that event will be inaccurate, since the simulation ends before that day is reached.
 
+**Reading validation output.** A Z-score of "n/a" means there's only one simulation replicate, so there's no variance to compare against; it is not an error. The "Infected" row is the exception: its std comes from a binomial model, not from replicates, so it always has a Z-score. That std is a lower bound (it ignores variation in contacts and infectiousness), so treat large Z-scores there with care.
 
-The idea behind this code is to integrate the GEMS code to be able to have events
-    where people can get extra infections and contacts.
-It is important to notice that the contacts happening at the events are properly extra contacts.
-    GEMS calculates normally the number of contacts an individual has in the normal settings,
-    without considering their participation in events. So the event contacts are added on top
-    of all the other contacts.
-To do so the code is using the global setting.
-    The global setting contains the entire population, so for large population is very slow.
-    Various precautions have been taken to have it run efficiently, but it has not been tested on larger population.
+## Files
 
+All code is in `Concert_Project/`:
 
-The code is divided in 8 +1 files:
-0_Helpers
-    This file contains a series of struct and function that get called by the other files.
-1_UserConfig
-    This file is were the user can define transmission and superspreader probability.
-        Here is where the user can define events.
-2_Interface
-    This is the file that links all together by calling the other files and running the simulations.
-3_Population
-    This is the file that creates the different events and assign the population to participate.
-4_Contacts
-    This file contains the contact function for the whole simulation, not just events:
-        the normal settings (household, office, etc.) and the events each use their own logic here.
-5_Transmission
-    This file contains the transmission function for the whole simulation, same as above:
-        normal settings and events each have their own logic here.
-6_Analysis
-    This file contains all the output related functions.
-    Plots and metrics are produced here.
-7_Validation
-    This file is contains a series of checks and extra metrics to help check the correct
-        functioning of the code.
-config_concert_covid
-    This file is the classic TOML for GEMS simulations.
-        NOTE: general_rate and contactparameter in this file are required to exist by GEMS but
-            are never actually read; they have no effect. The real values are set in 1_UserConfig.
+| File | Purpose |
+|---|---|
+| `0_Helpers.jl` | Structs and helper functions used by the other files. |
+| `1_UserConfig.jl` | Transmission and superspreader probabilities, and the event definitions. |
+| `2_Interface.jl` | Links everything together and runs the simulations. |
+| `3_Population.jl` | Creates the events and assigns the population to them. |
+| `4_Contacts.jl` | Contact sampling for the whole simulation: normal settings (household, office, etc.) and events each use their own logic. |
+| `5_Transmission.jl` | Transmission function for the whole simulation, with the same split as above. |
+| `6_Analysis.jl` | Output: text metrics and plots. |
+| `7_Validation.jl` | Checks and extra metrics to confirm the code works correctly. |
+| `config_concert_covid.toml` | The standard GEMS configuration file. |
 
+`general_rate` and `contactparameter` in the TOML must exist for GEMS's parser but are never read. The real values are set in `1_UserConfig.jl`.
 
+## Configuring events
 
-The code is run from file 2_Interface.
-It first call file 0_Helpers, that contains a series of useful struct and functions.
-Then it moves to file 1_UserConfig.
-    In this file the User can decide transmission probability for the normal individual and for the superspreaders, together with the probability of superspreaders.
-    The User can then creates categories of events. The fiels in category are:
-        id: Unique id used for internal processing. MUST BE UNIQUE otherwise events may be
-            overwritten.
-        name: Make it easier for the user to understand the outputs.
-            Should also be unique; some output filenames are built from it, and a collision
-                overwrites one category's output with another's.
-        date_range: In which dates can events of this category happen.
-            NOTE: Events of the same category cannot happen on the same day. The code will
-                check and try to pick different dates but it needs to have enough options.
-            NOTE: Different categories CAN land on the same date by coincidence. If that happens
-                and it creates a conflict (someone eligible for both), all events of a date are filled together, core first, then loyalty, then random. So a category can never take another's core members, and its random fill can't take another's loyal attendees.
-            NOTE: A person can also attend events from more than one category on different days.
-                Nothing ties someone to a single category. Being core/loyal to one category doesn't
-                exclude someone from being randomly drawn into another's events too.
-        sections: Each category must have at least 1 declared section. Here is were the size and
-            number of contacts are declared.
-            There can be multiple sections, they must have unique ids.
-                If there are multiple sections, every event of that category will have all the sections.
-        n_draws: how many times this category recurs. Note the total number of events created
-            is n_draws times the number of sections, not n_draws itself.
-        min and max age: selfexplanatory, minimum and maximum age for someone attending the event.
-            NOTE: age_boundaries (below) are shared across categories, but since min/max age
-                truncate who's eligible first, the same boundary can cover a different real age
-                range per category.
-        age_weights: the age distribution of the participants to events of this type. This is
-            capped by the above min and max ages.
-            Age weights dont have to sum up to 1, they are proper weights. As such, the true
-                distribution of age at the event may be slightly different.
-        sex weights: the sex distribution of the participants to events of this type.
-            Sex weights dont have to sum up to 1, they are proper weights. As such, the true
-                distribution of sex at the event may be slightly different.
-        core: what fraction of each draw's attendees attends every draw of the category.
-            It is calculated on the smallest draw (all sections together) that has been
-                generated, so all members always fit.
-            With section_mode = :section it is calculated on each section's smallest size
-                instead, so every home section always fits. This gives a slightly smaller core.
-            The regular part follows the demographic distributions; the superspreader part
-                (below) is picked uniformly at random instead, not demographically weighted.
-            A person can be core for at most one category, never two at once.
-            With several sections, placement depends on section_mode.
-        loyalty: this represent what percentage of the remaining non-core spots are reserved for
-            people that already attended at least one non-core event of that category, core excluded.
-            This pool only grows and never expires. Selection follows the demographic weights too;
-                attending more times before doesn't give extra weight.
-            With several sections, placement depends on section_mode.
-        min_superspreaders: As is our interest to check the worst cases, it is possible to pick
-            how many superspreader minimum have to attend. Extras could be picked at random later.
-        cross_section_mean_contacts: How many contacts a person in one section can have with a
-            person in another section.
-            NOTE: This is the same value distributed across all sections.
-            NOTE: This are added on top of the contacts intra section and can still contact
-                in the same section.
-        section_mode entry. :event (the default) places core and loyal members in a random section at every draw, in proportion to
-            section size. :section gives core members a fixed home section, and loyal attendees go back to their last section.
+In `1_UserConfig.jl` you set the transmission probability for normal individuals and for superspreaders, the probability of being a superspreader, and then create categories of events. Each category has these fields:
 
-        NOTE: Superspreaders and core are picked ONCE per category, before any of its events are
-            processed, not "for the first event" specially. The same core then attends every
-            event of that category from the first one on, minus same-day conflicts.
-            Events are filled date by date: core of every event, then loyalty of every event, then random fill
-                of every event.
-                Anyone filled by loyalty OR by random fill becomes loyalty-eligible for that category's later events.
+- **`id`**: unique id used for internal processing. Must be unique, otherwise events may be overwritten.
+- **`name`**: makes the outputs easier to read. Should also be unique, since some output filenames are built from it, and a collision overwrites one category's output with another's.
+- **`date_range`**: the days on which events of this category can happen.
+  - Events of the same category cannot happen on the same day. The code picks different dates, but the range needs enough days.
+  - Different categories can land on the same date by coincidence. In that case all events of that date are filled together: core first, then loyalty, then random. So a category can never take another's core members, and its random fill can't take another's loyal attendees.
+  - A person can attend events from more than one category on different days. Being core or loyal to one category doesn't exclude someone from being randomly drawn into another's events.
+- **`sections`**: at least one per category. This is where the size and number of contacts are set. Multiple sections must have unique ids, and every event of the category has all its sections.
+- **`n_draws`**: how many times the category recurs. The total number of events created is `n_draws` times the number of sections, not `n_draws` itself.
+- **`min_age`, `max_age`**: minimum and maximum age of attendees. `age_boundaries` (see below) are shared across categories, but since the min and max age filter who is eligible first, the same boundary can cover a different real age range per category.
+- **`age_weights`**: the age distribution of attendees, within the min and max ages. These are weights and don't have to sum to 1, so the real distribution at the event may differ slightly.
+- **`sex_weights`**: the sex distribution of attendees. Also weights, with the same caveat.
+- **`core`**: the fraction of each draw's attendees who attend every draw of the category.
+  - It is calculated on the smallest draw generated (all sections together), so all core members always fit. With `section_mode = :section` it is calculated on each section's smallest size instead, so every home section fits. This gives a slightly smaller core.
+  - The regular part follows the demographic weights; the superspreader part (see `min_superspreaders`) is picked uniformly at random.
+  - A person can be core for at most one category.
+  - With several sections, placement depends on `section_mode`.
+- **`loyalty`**: the fraction of the remaining non-core spots reserved for people who already attended at least one non-core event of the category. This pool only grows and never expires. Selection follows the demographic weights; attending more times doesn't give extra weight. With several sections, placement depends on `section_mode`.
+- **`min_superspreaders`**: the minimum number of superspreaders in the core, to study worst cases. More can still be picked at random later.
+- **`cross_section_mean_contacts`**, **`cross_section_std_contacts`**: contacts a person has with people in other sections of the same event. The same value applies to all sections, and these contacts come on top of the within-section ones.
+- **`section_mode`**: where core and loyal members go when there are several sections. `:event` (the default) places them in a random section at every draw, in proportion to section size. `:section` gives core members a fixed home section, and loyal attendees go back to their last section.
 
-        NOTE: validate_config (run automatically after event_config is built, see below) catches
-            common mistakes like wrong-length weight lists, inverted ranges, core outside [0,1], and
-            more min_superspreaders than the smallest possible draw can hold, but
-            not everything is checked. See its comments in 0_Helpers for the current list of what
-            is and isn't validated.
+Core members and superspreaders are picked once per category, before any of its events are processed. The same core then attends every event of the category, from the first one on. Events are filled date by date: core of every event, then loyalty of every event, then random fill of every event. Anyone filled by loyalty or random fill becomes loyalty-eligible for that category's later events.
 
-    Then the user as to configure the events by specifing which cateogries are included in
-        the simulation. This allows to have multiple events and easily exclude or include some
-        for testing instead.
-        event_config contains age boundaries that are used to categorize age in the same way for all events,
-        age and sex dist are there as a generalization. If a category doesnt have age and sex weights, these values will be used instead.
+`validate_config` runs automatically once `event_config` is built. It catches common mistakes like wrong-length weight lists, inverted ranges, `core` outside [0, 1], and more `min_superspreaders` than the smallest possible draw can hold. Not everything is checked; see its comments in `0_Helpers.jl` for the full list.
 
-Then the code moves to file 3_Population.
-    This file turns the categories from 1_UserConfig into actual events (assigning each
-        a real date and size), builds the population individuals will be assigned from,
-        and then assigns people to every event following the rules described above
-        (core, loyalty, random fill, demographic weighting).
-    Nothing here needs to be configured by the user; this is what happens automatically
-        once 1_UserConfig is set up.
+Finally, `event_config` lists which categories are included in the simulation, so categories can easily be switched on or off for testing. It also holds `age_boundaries`, used to group ages the same way for all events, and `age_dist` and `sex_dist`, used for any category without its own `age_weights` or `sex_weights`.
 
-    Transmission probability is assigned once per person, at the very start, before any
-        events are even sampled. Each person gets a fixed value drawn from the transmission
-        and superspreader probabilities set in 1_UserConfig, based on whether they happen to
-        be a superspreader. This value never changes afterward, regardless of which events
-        (if any) that person later attends.
+## What happens during a run
 
-    A few custom fields get added to every person at this point, which are what let the
-        rest of the code (contacts, transmission, validation) know who attended what:
-        category_ids, draw_ids, section_ids: which category/draw/section they attended,
-            one entry per event attended.
-        event_dates: the date of each event attended.
-        mean_event_contacts / std_event_contacts: their within-section contact rate at
-            each event attended.
-        cross_section_mean_contacts / cross_section_std_contacts: same, but for contacts
-            with people in other sections of the same event.
-        is_superspreader / transmission_prob: fixed at the start, as above, not tied to
-            any specific event.
+`2_Interface.jl` loads `0_Helpers.jl` and `1_UserConfig.jl`, then the rest of the code.
 
-Then the code moves to file 4_Contacts.
-    This file defines how many contacts a person has in every setting, both normal ones
-        (household, office, etc.) and events. For events, it handles both the within-section
-        and cross-section contacts described above.
-    Nothing here needs to be configured by the user.
+**3_Population** turns the categories into actual events (each with a date and a size), builds the population, and assigns people to every event following the rules above. Nothing here needs to be configured.
 
-Then the code moves to file 5_Transmission.
-    This file defines whether a contact actually results in an infection. For normal settings
-        it simply uses the infecter's own transmission_prob (fixed in 3_Population). For events,
-        it also checks that the infecter and infected attended the same event (any section).
-    Nothing here needs to be configured by the user.
+Each person's transmission probability is drawn once, at the very start, from the values in `1_UserConfig.jl`, depending on whether they are a superspreader. It never changes afterward, regardless of which events that person attends. A few fields are added to every person so the rest of the code knows who attended what:
 
-With 0_Helpers, 1_UserConfig, 3_Population, 4_Contacts and 5_Transmission all loaded, control
-    returns to 2_Interface, which samples the events, prepares and assigns the population, then
-    builds and runs the actual GEMS simulation using everything defined above.
+- `category_ids`, `draw_ids`, `section_ids`: which category, draw and section they attended, one entry per event attended.
+- `event_dates`: the date of each event attended.
+- `mean_event_contacts`, `std_event_contacts`: their within-section contact rate at each event.
+- `cross_section_mean_contacts`, `cross_section_std_contacts`: the same, for contacts with people in other sections of the same event.
+- `is_superspreader`, `transmission_prob`: fixed at the start, not tied to any event.
 
-Once the simulation finishes, the code moves to file 6_Analysis.
-    This runs automatically and produces the text metrics and every plot (epidemic curves,
-        cases by setting, per-event SEIR bars, infected boxplot), saved to the Results folder.
-    Nothing here needs to be configured by the user.
+**4_Contacts** defines how many contacts a person has in every setting, both normal ones and events. For events it handles both within-section and cross-section contacts.
 
-If run_validation is set to true (in 2_Interface), the code then moves to file 7_Validation.
-    This also runs automatically, and checks the simulation's actual outcomes (assignment
-        counts, compartment totals, demographics, epidemic state) against what's expected,
-        to help confirm everything is working correctly.
-    Not required for a normal run, but useful to catch mistakes.
+**5_Transmission** decides whether a contact results in an infection. Normal settings use the infecter's own `transmission_prob`. For events it also checks that the infecter and the infected attended the same event (any section).
+
+`2_Interface.jl` then samples the events, prepares and assigns the population, and runs the GEMS simulation.
+
+**6_Analysis** runs automatically afterwards and produces the text metrics and the plots (epidemic curves, cases by setting, per-event SEIR bars, infected boxplots), saved to the `Results` folder.
+
+**7_Validation** runs if `run_validation` is `true`. It checks the outcomes (assignment counts, compartment totals, demographics, epidemic state) against what's expected. Not required for a normal run, but useful to catch mistakes.
