@@ -5,11 +5,13 @@
 # write text metrics and generate every plot. Not meant to be included on
 # its own — the calls at the bottom of this file (print_metrics,
 # plot_epidemic_overview, etc.) execute immediately using variables
-# (aggregated, events, bd, run_folder, event_results, n_simulations)
-# assumed to already exist in the calling scope.
+# (aggregated, events, bd, run_folder, event_results, n_simulations,
+# gems_seed_used, last_day) assumed to already exist in the calling scope.
 #
-# fmt, print_table_header, print_metric_row, and add_event_vlines!, used
-# throughout this file, are defined in 0_Helpers.jl (included first).
+# fmt, print_table_header, print_metric_row, add_event_vlines!,
+# susceptible_attack_rates, offspring_dispersion, PLOT_COLORS and
+# PLOT_PALETTE, used throughout this file, are defined in 0_Helpers.jl
+# (included first).
 # ===========================================================================
 
 
@@ -17,19 +19,36 @@
 
 # Writes per-event compartment metrics and global epidemic stats to
 # multievent_analysis.txt in run_folder.
-function print_metrics(aggregated, events, bd, run_folder)
+function print_metrics(aggregated, event_results, events, bd, run_folder, gems_seed_used, last_day)
     filename = "$run_folder/multievent_analysis.txt"
 
     open(filename, "w") do io
         println(io, "=== MultiEvent Analysis ===")
         println(io, "Simulations: $n_simulations")
         println(io, "Events: $(length(events))")
+        println(io, "Setup seed (TOML): $seed")
+        println(io, "GEMS seed: $gems_seed_used ($(Threads.nthreads()) thread(s); " *
+                    "set gems_seed to this value in the config you ran with and use the same thread count to repeat this run)")
 
         # --- Global epidemic metrics ---
         println(io, "\n--- Global Epidemic Metrics ---")
         println(io, "Total infections: $(fmt(total_infections(bd)["mean"]))")
         println(io, "Attack rate:      $(fmt(attack_rate(bd)["mean"]))")
         println(io, "R0:               $(fmt(r0(bd)["mean"]))")
+
+        # dispersion of onward infections, one value per run
+        disp = [offspring_dispersion(infections(rd), last_day) for rd in runs(bd)]
+        ks = [d.k for d in disp if !isnan(d.k)]
+        k_str = isempty(ks) ? "n/a (too few infections)" :
+                all(isinf, ks) ? "Inf (no overdispersion)" :
+                "$(fmt(median(ks))) (median over runs; min $(fmt(minimum(ks))), max $(fmt(maximum(ks))))"
+        cutoffs = [d.cutoff for d in disp]
+        cutoff_str = minimum(cutoffs) == maximum(cutoffs) ? "$(cutoffs[1])" :
+                     "$(minimum(cutoffs))-$(maximum(cutoffs))"
+        println(io, "Offspring k:      $k_str")
+        println(io, "                  lower k = more superspreading, Inf = no overdispersion. People infected in the " *
+                    "last $cutoff_str days are left out: 95% of infected people stopped being able to infect within " *
+                    "that time in these runs (until recovery, death or hospital admission)")
 
         # --- Per event metrics ---
         for event in events
@@ -43,12 +62,19 @@ function print_metrics(aggregated, events, bd, run_folder)
             print_metric_row(io, "Infectious", metrics[:infectious])
             print_metric_row(io, "Exposed", metrics[:exposed])
             print_metric_row(io, "Recovered", metrics[:recovered])
-            print_metric_row(io, "Dead", metrics[:dead])
+            print_metric_row(io, "Absent", metrics[:absent])   # dead, severe or hospitalised that day
             print_metric_row(io, "Same day other", metrics[:same_day_other])
             print_metric_row(io, "Infected at event", metrics[:infected_at_event])
 
-            infection_rate = metrics[:infected_at_event].mean / event.n * 100
-            println(io, "\nInfection rate: $(fmt(infection_rate))%")
+            share_infected = metrics[:infected_at_event].mean / event.n * 100
+            println(io, "\nShare of attendees infected:            $(fmt(share_infected))%")
+
+            # mean of per-run rates; runs with no susceptible attendees are skipped
+            rates = susceptible_attack_rates(event_results, event.id)
+            rate_str = isempty(rates) ? "n/a (no susceptible attendees)" : "$(fmt(mean(rates)))%"
+            skipped = length(event_results) - length(rates)
+            skipped > 0 && (rate_str *= " ($skipped run(s) with no susceptible attendees skipped)")
+            println(io, "Attack rate among susceptible attendees: $rate_str")
         end
     end
 
@@ -82,11 +108,11 @@ end
 # setting_type ('?') — a single-point seeding spike at tick 0, not a trend.
 function plot_cases_by_setting(bd, events, run_folder)
     setting_colors = Dict(
-        'h' => :orange,
-        'c' => :red,
-        'o' => :purple,
-        'g' => :blue,
-        'm' => :brown,
+        'h' => PLOT_COLORS.blue,
+        'c' => PLOT_COLORS.green,
+        'o' => PLOT_COLORS.purple,
+        'g' => PLOT_COLORS.vermillion,   # events: the strongest colour
+        'm' => PLOT_COLORS.skyblue,
     )
     setting_labels = Dict(
         'h' => "Household",
@@ -144,8 +170,9 @@ end
 # Filenames use event.name, not the guaranteed-unique event.id — category
 # and section names need to stay distinct for this not to collide.
 function plot_event_seir(aggregated, events, run_folder)
-    fields = [:susceptible, :infectious, :exposed, :recovered, :dead]
-    colors = [:green, :red, :blue, :gray, :black]
+    fields = [:susceptible, :infectious, :exposed, :recovered, :absent]   # absent: dead, severe or hospitalised
+    colors = [PLOT_COLORS.skyblue, PLOT_COLORS.vermillion, PLOT_COLORS.orange,
+              PLOT_COLORS.green, PLOT_COLORS.black]
 
     for event in events
         metrics = aggregated[event.id]
@@ -168,20 +195,28 @@ end
 # to infected_boxplot.png. Falls back to a plain bar chart with a single
 # value per event when there's only one replicate (n_simulations == 1),
 # since a boxplot needs a distribution to be meaningful.
-function plot_infected_boxplot(event_results, events, run_folder)
-    event_ids = [e.id for e in events]
-    values_per_event = [[r[e.id].infected_at_event for r in event_results] for e in events]
+# Boxes are coloured by category (one legend entry per category); each box
+# is labelled with its event id on the x axis.
+function plot_infected_boxplot(event_results, events, event_config, run_folder)
+    # one palette colour per category, in config order
+    cat_color = Dict(c.id => PLOT_PALETTE[mod1(i, length(PLOT_PALETTE))]
+                     for (i, c) in enumerate(event_config.categories))
+    cat_name = Dict(c.id => (isempty(c.name) ? "category $(c.id)" : c.name)
+                    for c in event_config.categories)
 
     p = plot(title="Infected at Event", xlabel="Event", ylabel="Infected", dpi=300,
         legend=:outertopright)
 
-    if length(event_results) > 1
-        for (i, vals) in enumerate(values_per_event)
-            boxplot!(p, [event_ids[i]], vals, label=event_ids[i], legend=true)
+    labelled = Set{Int}()   # categories already in the legend
+    for e in events
+        vals = [r[e.id].infected_at_event for r in event_results]
+        label = e.category_id in labelled ? "" : cat_name[e.category_id]
+        push!(labelled, e.category_id)
+        if length(event_results) > 1
+            boxplot!(p, [e.id], vals, color=cat_color[e.category_id], label=label)
+        else
+            bar!(p, [e.id], vals, color=cat_color[e.category_id], label=label)
         end
-    else
-        single_vals = [vals[1] for vals in values_per_event]
-        bar!(p, event_ids, single_vals, label=false)
     end
 
     savefig(p, "$run_folder/infected_boxplot.png")
@@ -189,9 +224,12 @@ function plot_infected_boxplot(event_results, events, run_folder)
 end
 
 # Like the old sitting/standing boxplot: one panel per (category, section),
-# one box per draw at its date. rate=true plots % of attendees instead of
-# counts, since n differs between draws. Saved to infected_by_section.png.
+# one box per draw at its date. rate=true plots the attack rate among
+# susceptible attendees (per run, as in multievent_analysis.txt) instead of
+# counts, since n and the number of susceptibles differ between draws; runs
+# with no susceptible attendees are skipped. Saved to infected_by_section.png.
 function plot_infected_by_section(event_results, events, event_config, run_folder; rate=true)
+    isempty(events) && return
     panels = []
     for (cat_id, sec_id) in unique((e.category_id, e.section_id) for e in events)
         category = event_config.categories[findfirst(c -> c.id == cat_id, event_config.categories)]
@@ -204,16 +242,21 @@ function plot_infected_by_section(event_results, events, event_config, run_folde
         days = Int[]
         vals = Float64[]
         for e in filter(e -> e.category_id == cat_id && e.section_id == sec_id, events)
-            v = Float64[r[e.id].infected_at_event for r in event_results]
-            rate && (v .*= 100 / e.n)
+            v = rate ? susceptible_attack_rates(event_results, e.id) :
+                       Float64[r[e.id].infected_at_event for r in event_results]
             append!(vals, v)
             append!(days, fill(e.date, length(v)))
+        end
+
+        if isempty(vals)
+            push!(panels, plot(title="$title: no susceptible attendees", legend=false, axis=false, grid=false))
+            continue
         end
 
         # boxplot needs >1 replicate to mean anything; single run falls back to points
         plotfn = length(event_results) > 1 ? boxplot : scatter
         push!(panels, plotfn(days, vals, title=title, xlabel="Event day",
-            ylabel=rate ? "Infected (% of attendees)" : "Infected",
+            ylabel=rate ? "Infected (% of susceptible attendees)" : "Infected",
             xticks=unique(days), legend=false))
     end
 
@@ -223,11 +266,15 @@ function plot_infected_by_section(event_results, events, event_config, run_folde
 end
 
 # === Auto-generate ===
-print_metrics(aggregated, events, bd, run_folder)
+# colour-blind-friendly palette for every plot that doesn't set its own
+# colours, including GEMS's (see PLOT_COLORS in 0_Helpers.jl)
+default(palette = PLOT_PALETTE)
+
+print_metrics(aggregated, event_results, events, bd, run_folder, gems_seed_used, last_day)
 plot_epidemic_overview(bd, events, run_folder)
 plot_cases_by_setting(bd, events, run_folder)
 plot_event_seir(aggregated, events, run_folder)
-plot_infected_boxplot(event_results, events, run_folder)
+plot_infected_boxplot(event_results, events, event_config, run_folder)
 plot_infected_by_section(event_results, events, event_config, run_folder)
 
 println("\nAnalysis complete. Results saved to $run_folder")

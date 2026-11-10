@@ -12,12 +12,14 @@
 # Population-wide SEIR compartment counts as of `tick`, computed directly
 # from the infection log (not from tick_cases, which turned out to report
 # same-day incidence rather than cumulative prevalence). Used by
-# validate_epidemic_state as the population-wide baseline.
+# validate_epidemic_state as the population-wide baseline. Uses the same
+# compartments as analyze_event_population: absent (dead, severe or
+# hospitalised that day) first, then infectious / recovered / exposed.
 function population_compartment_counts(inf_log::DataFrame, tick::Int, pop_size::Int)
     infectious = 0
     exposed = 0
     recovered = 0
-    dead = 0
+    absent = 0
     same_day_other = 0   # infected on `tick` outside GlobalSetting, before events run
 
     for row in eachrow(inf_log)
@@ -26,22 +28,21 @@ function population_compartment_counts(inf_log::DataFrame, tick::Int, pop_size::
             continue
         end
         row.tick > tick && continue
-        if row.infectiousness_onset <= tick &&
-           (row.recovery > tick || row.recovery == -1) &&
-           (row.death > tick || row.death == -1)
+        if absent_on(tick, row)
+            absent += 1
+        elseif row.infectiousness_onset <= tick &&
+           (row.recovery > tick || row.recovery == -1)
             infectious += 1
         elseif row.recovery != -1 && row.recovery <= tick
             recovered += 1
-        elseif row.death != -1 && row.death <= tick
-            dead += 1
         else
             exposed += 1
         end
     end
 
-    susceptible = pop_size - infectious - exposed - recovered - dead - same_day_other
+    susceptible = pop_size - infectious - exposed - recovered - absent - same_day_other
     return (susceptible=susceptible, infectious=infectious, exposed=exposed,
-        recovered=recovered, dead=dead, same_day_other=same_day_other)
+        recovered=recovered, absent=absent, same_day_other=same_day_other)
 end
 
 # Prints the overall attendance distribution (events attended per person,
@@ -147,10 +148,10 @@ function validate_results(aggregated::Dict, events::Vector{Event})
             println("  ✓ infected_at_event within bounds")
         end
 
-        # susceptible + infected + exposed + recovered + dead should equal section size
+        # susceptible + infectious + exposed + recovered + absent + same-day-other should equal section size
         total = metrics[:susceptible].mean + metrics[:infectious].mean +
                 metrics[:exposed].mean + metrics[:recovered].mean +
-                metrics[:dead].mean + metrics[:same_day_other].mean
+                metrics[:absent].mean + metrics[:same_day_other].mean
         if abs(total - event.n) > 1.0  # allow small rounding error
             println("  ✗ compartment totals ($(fmt(total))) don't match section size ($(event.n))")
         else
@@ -219,10 +220,8 @@ end
 # expected value (population-wide prevalence scaled to event size, plus a
 # transmission-probability estimate for infected_at_event), as a Z-score.
 # The transmission rate used is the mean transmission_prob across this
-# event's actual attendees, not a flat population-wide constant — this
-# matters when categories concentrate superspreaders (via min_superspreaders
-# or core targeting), since a flat rate would systematically underestimate
-# expected infections for those events.
+# event's actual attendees, not a flat population-wide constant, since
+# each person has their own transmission_prob.
 #
 # The compartment baseline assumes attendees are a random sample of the
 # population. Core and loyal repeat attendees had extra exposure at earlier
@@ -231,12 +230,18 @@ end
 #
 # The Infected row's std is binomial, sqrt(S*p*(1-p)), so it has a Z-score
 # even with one replicate. It is a lower bound: it ignores variation in the
-# number of infectious attendees, contact overdispersion and superspreaders,
-# which inflates Z. With several replicates, observed is a mean but the std
-# is still per-run, which deflates Z.
+# number of infectious attendees, contact overdispersion and differences in
+# transmission_prob between people, which inflates Z.
+#
+# Observed is the mean over replicates, so every row's std (one run's
+# spread) is divided by sqrt(n_runs) to get the spread of that mean.
+#
+# Read these as sanity checks, not formal tests: the expected values are
+# rough approximations, so only very large Z-scores deserve a closer look.
 function validate_epidemic_state(aggregated, events, bd, event_config, people, attendees)
     println("\n=== Epidemic State Validation ===")
 
+    n_runs = length(runs(bd))
     pop_size = nrow(people)
     unique_dates = unique(e.date for e in events)
 
@@ -253,7 +258,7 @@ function validate_epidemic_state(aggregated, events, bd, event_config, people, a
             infectious=mean(c.infectious for c in cs),
             exposed=mean(c.exposed for c in cs),
             recovered=mean(c.recovered for c in cs),
-            dead=mean(c.dead for c in cs),
+            absent=mean(c.absent for c in cs),
             same_day_other=mean(c.same_day_other for c in cs),
         )
         for (date, cs) in counts_per_date
@@ -262,8 +267,10 @@ function validate_epidemic_state(aggregated, events, bd, event_config, people, a
     # z_str is "n/a" rather than a Z-score of 0 when std == 0 (e.g. with a
     # single simulation replicate), since 0 would misleadingly look like a
     # perfect match rather than "no variance to compare against."
+    # std is one run's spread; std / sqrt(n_runs) is the spread of the mean.
     function print_validation_row(label, expected, observed, std)
-        z_str = std > 0 ? fmt((observed - expected) / std) : "n/a"
+        se = std / sqrt(n_runs)
+        z_str = se > 0 ? fmt((observed - expected) / se) : "n/a"
         println("  $(rpad(label, 20)) $(rpad(fmt(expected), 12)) $(rpad(fmt(observed), 12)) $z_str")
     end
 
@@ -274,11 +281,11 @@ function validate_epidemic_state(aggregated, events, bd, event_config, people, a
         expected_infectious = (pc.infectious / pop_size) * event.n
         expected_exposed = (pc.exposed / pop_size) * event.n
         expected_recovered = (pc.recovered / pop_size) * event.n
-        expected_dead = (pc.dead / pop_size) * event.n
+        expected_absent = (pc.absent / pop_size) * event.n
         # observed susceptible also excludes same-day infections in other
         # settings (GlobalSetting runs last), so the baseline must too
         expected_susceptible = event.n - expected_infectious - expected_exposed -
-                               expected_recovered - expected_dead -
+                               expected_recovered - expected_absent -
                                (pc.same_day_other / pop_size) * event.n
 
         n_section = event.n
@@ -309,7 +316,7 @@ function validate_epidemic_state(aggregated, events, bd, event_config, people, a
         print_validation_row("Infectious", expected_infectious, metrics[:infectious].mean, metrics[:infectious].std)
         print_validation_row("Exposed", expected_exposed, metrics[:exposed].mean, metrics[:exposed].std)
         print_validation_row("Recovered", expected_recovered, metrics[:recovered].mean, metrics[:recovered].std)
-        print_validation_row("Dead", expected_dead, metrics[:dead].mean, metrics[:dead].std)
+        print_validation_row("Absent", expected_absent, metrics[:absent].mean, metrics[:absent].std)
         println("  " * "-"^55)
         print_validation_row("Infected", expected_infected, metrics[:infected_at_event].mean, std_infected)
     end
