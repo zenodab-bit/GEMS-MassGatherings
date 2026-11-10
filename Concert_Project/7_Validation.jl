@@ -288,21 +288,26 @@ function validate_epidemic_state(aggregated, events, bd, event_config, people, a
                                expected_recovered - expected_absent -
                                (pc.same_day_other / pop_size) * event.n
 
-        n_section = event.n
+        # attendees actually there (assigned minus absent, mean over
+        # replicates): absent people are left out of the contact lists
+        present(e) = e.n - aggregated[e.id][:absent].mean
+        n_section = present(event)
         event_transmission_rate = mean(people.transmission_prob[idx] for idx in attendees[event.id])
         exponent = n_section > 1 ?
                    metrics[:infectious].mean * event.mean_contacts *
                    event_transmission_rate / (n_section - 1) : 0.0
         # cross-section contacts: an infectious person in section t draws them
-        # from everyone in the same draw outside t, i.e. (draw total - n_t) people
+        # from everyone present in the same draw outside t
         if event.cross_section_mean_contacts > 0
             siblings = filter(e -> e.category_id == event.category_id && e.draw_id == event.draw_id &&
                                    e.section_id != event.section_id, events)
-            n_draw = event.n + sum(e.n for e in siblings; init=0)
+            n_draw = n_section + sum(present(e) for e in siblings; init=0.0)
             for e in siblings
                 sibling_rate = mean(people.transmission_prob[idx] for idx in attendees[e.id])
+                n_reachable = n_draw - present(e)
+                n_reachable > 0 || continue
                 exponent += aggregated[e.id][:infectious].mean * event.cross_section_mean_contacts *
-                            sibling_rate / (n_draw - e.n)
+                            sibling_rate / n_reachable
             end
         end
         p_infected = 1 - exp(-exponent)

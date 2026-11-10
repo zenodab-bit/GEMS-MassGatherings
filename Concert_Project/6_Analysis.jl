@@ -66,8 +66,12 @@ function print_metrics(aggregated, event_results, events, bd, run_folder, gems_s
             print_metric_row(io, "Same day other", metrics[:same_day_other])
             print_metric_row(io, "Infected at event", metrics[:infected_at_event])
 
-            share_infected = metrics[:infected_at_event].mean / event.n * 100
-            println(io, "\nShare of attendees infected:            $(fmt(share_infected))%")
+            # per run, among attendees who were actually there (assigned
+            # minus absent); runs where nobody was there are skipped
+            shares = [100 * r[event.id].infected_at_event / (event.n - r[event.id].absent)
+                      for r in event_results if event.n > r[event.id].absent]
+            share_str = isempty(shares) ? "n/a (no attendees present)" : "$(fmt(mean(shares)))%"
+            println(io, "\nShare of present attendees infected:    $share_str")
 
             # mean of per-run rates; runs with no susceptible attendees are skipped
             rates = susceptible_attack_rates(event_results, event.id)
