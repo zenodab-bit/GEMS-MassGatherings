@@ -1,8 +1,8 @@
 # ===========================================================================
 # 1_UserConfig.jl
 #
-# Edit this file to configure a simulation: transmission/superspreader
-# parameters and event categories. This and 2_Interface.jl are the only
+# Edit this file to configure a simulation: transmission parameters and
+# event categories. This and 2_Interface.jl are the only
 # files you should need to touch to run a simulation with different
 # settings — everything else is internal machinery.
 #
@@ -13,16 +13,30 @@
 # === Simulation ===
 config = TOML.parsefile(joinpath(@__DIR__, "config_concert_covid.toml"))
 seed = config["Simulation"]["seed"]
-rng = Xoshiro(seed)   # same seed, same population/events/assignment every run — not the epidemic itself, GEMS seeds that separately
 
-# Transmission — feeds gamma_params for each non-superspreader's transmission_prob
-general_rate = 0.3
-std_rate = 0.1
+# Setup seed: same seed, same events/traits/attendance every run (not the
+# epidemic itself, see gems_seed). Each setup step gets its own random
+# stream derived from `seed`, so changing one step doesn't reshuffle the
+# others: e.g. changing an event's size or n_draws leaves everyone's
+# transmission_prob unchanged.
+setup_rng = Xoshiro(seed)
+rng_events = Xoshiro(rand(setup_rng, UInt64))   # event dates and sizes
+rng_traits = Xoshiro(rand(setup_rng, UInt64))   # per-person traits (transmission_prob)
+rng_assign = Xoshiro(rand(setup_rng, UInt64))   # who attends what
 
-# Superspreaders — feeds gamma_params for the superspreader subgroup's transmission_prob
-superspreader_prob = 0.10
-superspreader_rate = 0.8
-superspreader_std = 0.15
+# Epidemic seed (GEMS's own randomness: initial infections, contacts,
+# infections, disease course). Separate from `seed` above.
+#   nothing  - a new random seed every run; it's printed and saved in the results
+#   a number - repeats that exact epidemic, e.g. a seed copied from earlier results
+#              (needs the same number of Julia threads as that run)
+gems_seed = nothing
+
+# Transmission — each person's transmission_prob (chance of infecting a
+# contact) is drawn once from this distribution, then kept within [0, 1].
+# Any distribution from Distributions.jl works, e.g.:
+transmission_dist = Gamma(gamma_params(0.3, 0.1)...)     # by mean and std
+# transmission_dist = Beta(beta_params(0.3, 0.1)...)     # by mean and std, always within [0, 1]
+# transmission_dist = Dirac(0.3)                          # the same for everyone
 
 # Event definitions — two example categories below; add, remove, or edit as needed.
 
@@ -42,13 +56,12 @@ category_1 = Category(
     sex_weights = [0.6, 0.4],
     core = 0.0,
     loyalty = 0.0,
-    min_superspreaders = 0,
     cross_section_mean_contacts = 1.0,
     cross_section_std_contacts = 2.0,
     section_mode = :event   # :event or :section
 )
 
-# sport: small guaranteed core group (10%) including at least 1 superspreader, recurs 5 times
+# sport: small guaranteed core group (10%), one section
 category_2 = Category(
     id = 2,
     name = "sport",
@@ -62,8 +75,7 @@ category_2 = Category(
     age_weights = [0.45, 0.40, 0.15],
     sex_weights = [0.55, 0.45],
     core = 0.1,
-    loyalty = 0,
-    min_superspreaders = 1
+    loyalty = 0
 )
 
 event_config = EventConfig(
