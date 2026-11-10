@@ -44,6 +44,17 @@ function gamma_params(mean, std)
     return α, β
 end
 
+# (α, β) params for Beta, which always stays within [0, 1]. Needs
+# 0 < mean < 1 and std^2 < mean * (1 - mean); errors otherwise.
+function beta_params(mean, std)
+    0 < mean < 1 || error("beta_params: mean ($mean) must be between 0 and 1.")
+    variance = std^2
+    variance < mean * (1 - mean) ||
+        error("beta_params: std ($std) too large for mean $mean; a Beta needs std^2 < mean * (1 - mean) = $(mean * (1 - mean)).")
+    k = mean * (1 - mean) / variance - 1
+    return mean * k, (1 - mean) * k
+end
+
 
 ## === 2. Age-group helpers ===
 
@@ -88,7 +99,6 @@ end
     sex_weights::Vector{Float64} = Float64[]    # overrides EventConfig.sex_dist if non-empty
     core::Float64 = 0.0                         # fraction (0-1) of the smallest draw (all sections together) that attends every draw
     loyalty::Float64 = 0.0                      # guaranteed, demographically-weighted fraction of non-core spots for past non-core attendees; pool never expires, no extra weight for repeat attendance
-    min_superspreaders::Int = 0                 # guaranteed superspreaders in the core group, if enough are available
     cross_section_mean_contacts::Float64 = 0.0  # contacts with attendees of other sections of the same draw; 0 keeps sections isolated
     cross_section_std_contacts::Float64 = 0.0
     # Where core and loyal members go when there are several sections (no
@@ -130,10 +140,16 @@ end
 # Verifies age_dist/sex_dist have the right length for age_boundaries, age_dist
 # sums to ~1.0, each category's age_weights/sex_weights (if given) have
 # the right length, min_age <= max_age, date_range and each section's
-# n_range aren't inverted, category.core is within [0, 1], and
-# min_superspreaders fits in the smallest possible draw.
+# n_range aren't inverted, category.core is within [0, 1], n_draws isn't
+# negative (0 only warns: it's a valid way to switch a category off), and
+# category ids, and section ids within each category, are unique.
 function validate_config(event_config::EventConfig)
     n_groups = length(event_config.age_boundaries) + 1
+
+    # duplicate ids would silently merge events (event ids are built from them)
+    category_ids = [c.id for c in event_config.categories]
+    allunique(category_ids) ||
+        error("Category ids must be unique, got $(category_ids).")
 
     length(event_config.age_dist) == n_groups ||
         error("age_dist has $(length(event_config.age_dist)) entries, expected $n_groups (length(age_boundaries)+1).")
@@ -149,6 +165,15 @@ function validate_config(event_config::EventConfig)
     end
 
     for category in event_config.categories
+        category.n_draws >= 0 ||
+            error("Category $(category.name): n_draws ($(category.n_draws)) must not be negative.")
+        category.n_draws == 0 &&
+            @warn "Category $(category.name): n_draws is 0, so it creates no events."
+
+        section_ids = [s.id for s in category.sections]
+        allunique(section_ids) ||
+            error("Category $(category.name): section ids must be unique, got $(section_ids).")
+
         if !isempty(category.age_weights)
             length(category.age_weights) == n_groups ||
                 error("Category $(category.name): age_weights has $(length(category.age_weights)) entries, expected $n_groups.")
@@ -172,12 +197,6 @@ function validate_config(event_config::EventConfig)
 
         category.section_mode in (:event, :section) ||
             error("Category $(category.name): section_mode must be :event or :section, got :$(category.section_mode).")
-
-        # superspreaders join the core, and core attends every draw: more of
-        # them than the smallest possible draw would overflow every event
-        min_draw = sum(s.n_range[1] for s in category.sections; init=0)
-        category.min_superspreaders <= min_draw ||
-            error("Category $(category.name): min_superspreaders ($(category.min_superspreaders)) exceeds the smallest possible draw ($min_draw, the sum of each section's n_range[1]); the core would overflow the event.")
     end
 
     println("Config validated OK.")
@@ -188,11 +207,28 @@ end
 
 # Concrete types (not Vector{Any}/Dict{Symbol,NamedTuple}) for per-event
 # compartment counts and their aggregated stats — for type stability.
-const EventCounts = @NamedTuple{susceptible::Int, infectious::Int, exposed::Int, recovered::Int, dead::Int, same_day_other::Int, infected_at_event::Int}
+const EventCounts = @NamedTuple{susceptible::Int, infectious::Int, exposed::Int, recovered::Int, absent::Int, same_day_other::Int, infected_at_event::Int}
 const EventStat = @NamedTuple{mean::Float64, std::Float64, min::Float64, p25::Float64, median::Float64, p75::Float64, max::Float64}
 
-# Classifies every attendee of every event into one SEIR-style compartment
-# as of that event's date, by scanning the infection log once per event.
+# Whether someone is dead, severely ill or in hospital on day t, from their
+# infection-log dates (exposure = the tick they were infected). Uses the
+# same rules as GEMS's is_dead / is_severe / is_hospitalized, which
+# absent_from_events (4_Contacts.jl) uses during the simulation: such people
+# don't attend events that day.
+function absent_on(t, exposure, recovery, death, sev_onset, sev_offset, hosp_admission, hosp_discharge)
+    0 <= death <= t && return true
+    infected = exposure >= 0 && exposure <= t < max(recovery, death)
+    infected || return false
+    return (0 <= sev_onset <= t < sev_offset) || (0 <= hosp_admission <= t < hosp_discharge)
+end
+
+absent_on(t, row) = absent_on(t, row.tick, row.recovery, row.death, row.severeness_onset,
+    row.severeness_offset, row.hospital_admission, row.hospital_discharge)
+
+# Classifies every assigned attendee of every event into one compartment as
+# of that event's date, by scanning the infection log once per event.
+# Absent (dead, severe or hospitalised that day) comes first; the other
+# compartments only count attendees who were actually there.
 function analyze_event_population(inf_log::DataFrame, people::DataFrame, events::Vector{Event}, attendees::Dict{String,Vector{Int}})
     results = Dict{String,EventCounts}()
 
@@ -205,21 +241,20 @@ function analyze_event_population(inf_log::DataFrame, people::DataFrame, events:
         currently_infectious_ids = Set{Int32}()
         exposed_before_ids = Set{Int32}()
         recovered_ids = Set{Int32}()
-        dead_ids = Set{Int32}()
+        absent_ids = Set{Int32}()
         same_day_other_ids = Set{Int32}()
         event_infected_ids = Set{Int32}()
 
         for row in eachrow(inf_log)
             if row.tick < event.date
                 push!(infected_before_ids, row.id_b)
-                if row.infectiousness_onset <= event.date &&
-                   (row.recovery > event.date || row.recovery == -1) &&
-                   (row.death > event.date || row.death == -1)
+                if absent_on(event.date, row)   # includes everyone dead by then
+                    push!(absent_ids, row.id_b)
+                elseif row.infectiousness_onset <= event.date &&
+                   (row.recovery > event.date || row.recovery == -1)
                     push!(currently_infectious_ids, row.id_b)
                 elseif row.recovery != -1 && row.recovery <= event.date
                     push!(recovered_ids, row.id_b)
-                elseif row.death != -1 && row.death <= event.date
-                    push!(dead_ids, row.id_b)
                 else
                     push!(exposed_before_ids, row.id_b)
                 end
@@ -238,7 +273,7 @@ function analyze_event_population(inf_log::DataFrame, people::DataFrame, events:
         infectious = length(intersect(currently_infectious_ids, section_ids))
         exposed = length(intersect(exposed_before_ids, section_ids))
         recovered = length(intersect(recovered_ids, section_ids))
-        dead = length(intersect(dead_ids, section_ids))
+        absent = length(intersect(absent_ids, section_ids))
         same_day_other = length(intersect(same_day_other_ids, section_ids))
         infected_at_event = length(intersect(event_infected_ids, section_ids))
 
@@ -247,7 +282,7 @@ function analyze_event_population(inf_log::DataFrame, people::DataFrame, events:
             infectious=infectious,
             exposed=exposed,
             recovered=recovered,
-            dead=dead,
+            absent=absent,
             same_day_other=same_day_other,
             infected_at_event=infected_at_event
         )
@@ -288,7 +323,151 @@ function aggregate_event_results(results_vector::Vector{Dict{String,EventCounts}
 end
 
 
+# Per-run attack rate among susceptible attendees of one event, in %:
+# infected_at_event / susceptible. Runs with no susceptible attendees are
+# skipped (the rate is undefined there), so the result can have fewer
+# entries than event_results, or none.
+function susceptible_attack_rates(event_results::Vector{Dict{String,EventCounts}}, event_id::String)
+    rates = Float64[]
+    for r in event_results
+        c = r[event_id]
+        c.susceptible > 0 && push!(rates, 100 * c.infected_at_event / c.susceptible)
+    end
+    return rates
+end
+
+
+# Dispersion k of onward infections (offspring) for one run: lower k means
+# more superspreading. Counts how many people each infected person went on
+# to infect (0 for those who infected nobody) and fits k by method of
+# moments, k = mean^2 / (variance - mean); Inf means no overdispersion.
+#
+# People infected too close to the end are left out, since the simulation
+# ends before they finish infecting others. The cutoff is measured from this
+# run's own infection log, so it follows whatever the TOML's pathogen
+# settings are: for every infected person, the days from infection until
+# they can no longer infect anyone, i.e. the earliest of recovery, death or
+# hospital admission (hospitalised people can't infect; severe people still
+# infect their household until recovery). The cutoff is the `coverage`
+# quantile (default 95%) of those durations, rounded up to whole days.
+#
+# The count pools the whole epidemic, so it also reflects susceptibles
+# running out over time.
+function offspring_dispersion(inf_log::DataFrame, last_tick::Integer; coverage::Real=0.95)
+    offspring = Dict{Int32,Int}()
+    for a in inf_log.id_a
+        a >= 0 || continue   # seed infections have no infecter (negative id)
+        offspring[a] = get(offspring, a, 0) + 1
+    end
+
+    # days each person stays able to infect (-1 in the log = never happens)
+    windows = Int[]
+    tick, rec, dth, hosp = inf_log.tick, inf_log.recovery, inf_log.death, inf_log.hospital_admission
+    for i in eachindex(tick)
+        stop = typemax(Int)
+        rec[i] >= 0 && (stop = min(stop, rec[i]))
+        dth[i] >= 0 && (stop = min(stop, dth[i]))
+        hosp[i] >= 0 && (stop = min(stop, hosp[i]))
+        stop == typemax(Int) && continue
+        push!(windows, stop - tick[i])
+    end
+    isempty(windows) && return (k=NaN, mean=NaN, n=0, cutoff=0)
+    cutoff = ceil(Int, quantile(windows, coverage))
+
+    included = tick .<= last_tick - cutoff
+    counts = [get(offspring, b, 0) for b in inf_log.id_b[included]]
+    length(counts) < 2 && return (k=NaN, mean=NaN, n=length(counts), cutoff=cutoff)
+
+    m = mean(counts)
+    v = var(counts)
+    k = v > m ? m^2 / (v - m) : Inf
+    return (k=k, mean=m, n=length(counts), cutoff=cutoff)
+end
+
+
 ## === 6. Output formatting & plotting helpers ===
+
+# Colours for every plot: the Okabe-Ito palette, chosen to stay
+# distinguishable for the common forms of colour blindness. Change a colour
+# here to change it everywhere. 6_Analysis.jl makes PLOT_PALETTE the default
+# palette, so plots that don't set colours themselves (e.g. GEMS's epidemic
+# overview) use it in this order. Black is left out of the palette, since it
+# hides the median lines in boxplots and clashes with the event-day lines.
+const PLOT_COLORS = (
+    blue       = colorant"#0072B2",
+    orange     = colorant"#E69F00",
+    green      = colorant"#009E73",
+    vermillion = colorant"#D55E00",
+    purple     = colorant"#CC79A7",
+    skyblue    = colorant"#56B4E9",
+    yellow     = colorant"#F0E442",   # low contrast on white: last in the palette
+    black      = colorant"#000000",
+)
+const PLOT_PALETTE = [PLOT_COLORS.blue, PLOT_COLORS.orange, PLOT_COLORS.green, PLOT_COLORS.vermillion,
+                      PLOT_COLORS.purple, PLOT_COLORS.skyblue, PLOT_COLORS.yellow]
+
+# Saves what's needed to rerun a run into <run_folder>/run_info:
+#   - copies of `config_files` (the files the run was configured with)
+#   - run_info.toml: the `settings` passed in (seeds, replicates, population
+#     files, ...), Julia version and thread count, and the code version
+#     (git commit and branch, and whether there were uncommitted changes)
+#   - uncommitted_changes.diff: those changes, if any (new files that were
+#     never added to git are not included)
+# The population and settings files are recorded by path, not copied.
+# See README, "Rerunning a run".
+function save_run_info(run_folder, config_files::Vector{String}; settings...)
+    dir = joinpath(run_folder, "run_info")
+    mkpath(dir)
+    for f in config_files
+        cp(f, joinpath(dir, basename(f)); force=true)
+    end
+
+    repo = normpath(joinpath(@__DIR__, ".."))
+    git_out(cmd) = try
+        strip(read(pipeline(cmd; stderr=devnull), String))
+    catch
+        "unknown (git not available)"
+    end
+    diff = git_out(`git -C $repo diff HEAD`)
+    has_changes = !isempty(diff) && !startswith(diff, "unknown")
+    has_changes && write(joinpath(dir, "uncommitted_changes.diff"), diff * "\n")
+
+    info = Dict(
+        "saved_at" => Dates.format(Dates.now(), "yyyy-mm-dd HH:MM:SS"),
+        "run" => Dict(string(k) => (isnothing(v) ? "nothing" : v) for (k, v) in settings),
+        "environment" => Dict("julia_version" => string(VERSION), "threads" => Threads.nthreads()),
+        "code" => Dict(
+            "git_commit" => git_out(`git -C $repo rev-parse HEAD`),
+            "git_branch" => git_out(`git -C $repo rev-parse --abbrev-ref HEAD`),
+            "uncommitted_changes" => has_changes,
+        ),
+    )
+    open(io -> TOML.print(io, info), joinpath(dir, "run_info.toml"), "w")
+    println("Saved: run_info (config copies, seeds, code version)")
+end
+
+# Saves the per-event results before they're summarised, so they can be
+# reused without rerunning:
+#   - events.csv: one row per event (id, category, draw, section, date, size,
+#     contact rates)
+#   - event_results.csv: one row per replicate and event, with every
+#     compartment count (susceptible ... infected_at_event)
+#   - attendance.jld2: who was assigned to each event ("attendees": event id
+#     => person ids) and each category's core group ("core_groups":
+#     category id => person ids). Person ids are the population's `id`.
+function save_raw_results(run_folder, events, event_results, attendees, core_groups, people)
+    events_df = DataFrame([NamedTuple{fieldnames(Event)}(getfield.(Ref(e), fieldnames(Event))) for e in events])
+    CSV.write(joinpath(run_folder, "events.csv"), events_df)
+
+    results_df = DataFrame([merge((replicate=r, event_id=e.id), res[e.id])
+                            for (r, res) in enumerate(event_results) for e in events])
+    CSV.write(joinpath(run_folder, "event_results.csv"), results_df)
+
+    JLD2.save(joinpath(run_folder, "attendance.jld2"),
+        "attendees", Dict(id => people.id[idxs] for (id, idxs) in attendees),
+        "core_groups", Dict(cid => people.id[idxs] for (cid, idxs) in core_groups))
+    println("Saved: events.csv, event_results.csv, attendance.jld2")
+end
 
 # Rounds a number for consistent display in printed tables.
 function fmt(x; digits=2)
