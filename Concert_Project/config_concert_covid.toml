@@ -22,8 +22,9 @@
     [Pathogens.Covid19]
         [Pathogens.Covid19.transmission_function]
             type = "SettingRate"
+            # must exist for GEMS, but stays empty: transmission uses each
+            # person's transmission_prob (mean and std in 1_UserConfig.jl)
             [Pathogens.Covid19.transmission_function.parameters]
-                general_rate = 0
 
         [Pathogens.Covid19.progressions]
 
@@ -210,5 +211,4 @@
 [Settings.GlobalSetting]
     [Settings.GlobalSetting.contact_sampling_method]
         type = "EventContacts"
-        [Settings.GlobalSetting.contact_sampling_method.parameters]
-            contactparameter = 1
+        # no parameters: event contact rates are set per section in 1_UserConfig.jl

@@ -3,18 +3,18 @@
 #
 # Extends GEMS's transmission_probability for SettingRate. For ordinary
 # settings, returns the infecter's own transmission_prob. For GlobalSetting
-# (mass gatherings), only returns it if infecter and infected share the
-# same event and section on this tick; otherwise 0.
+# (mass gatherings), only returns it if infecter and infected attend the
+# same event (same category and draw, any section) on this tick; otherwise
+# 0. Which section a contact comes from is decided in 4_Contacts.jl.
 # ===========================================================================
 
 import GEMS.transmission_probability
 
-# general_rate is required by GEMS's config parser (the TOML's
-# transmission_function block) but not read anywhere below — confirmed by
-# testing, transmission_prob (set per-person in 3_Population.jl) is what
-# actually governs transmission.
+# Transmission itself uses each person's transmission_prob (set in
+# 3_Population.jl), so there's no rate parameter here. GEMS first builds one
+# from the TOML (its `parameters` table must exist but can be empty), then
+# 2_Interface.jl replaces it with one holding the event dates.
 @with_kw mutable struct SettingRate <: GEMS.TransmissionFunction
-    general_rate::Float64
     event_dates::Set{Int16} = Set{Int16}()
 end
 
