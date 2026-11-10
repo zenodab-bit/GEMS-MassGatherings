@@ -53,11 +53,19 @@ end
 # rosters is rebuilt once per tick (see below), shared across every call
 # that tick rather than rescanning the whole population per call.
 @with_kw mutable struct EventContacts <: GEMS.ContactSamplingMethod
-    contactparameter::Float64 = 0.0
     cached_tick::Int16 = Int16(-1)
     rosters::Dict{Tuple{Int32,Int32,Int32},Vector{Individual}} = Dict{Tuple{Int32,Int32,Int32},Vector{Individual}}()
     draw_rosters::Dict{Tuple{Int32,Int32},Vector{Individual}} = Dict{Tuple{Int32,Int32},Vector{Individual}}()
 end
+
+# Attendance is fixed before the simulation, but on the day itself people
+# who are dead, severely ill or in hospital don't go: they're left out of
+# that day's rosters, so they neither infect nor take up contact slots.
+# (GEMS already stops them infecting outside the household, but would still
+# let others draw them as contacts.) People with milder symptoms still go.
+# Uses GEMS's state as of `tick`, computed from each person's disease dates.
+absent_from_events(x::Individual, tick::Int16) =
+    GEMS.is_dead(x, tick) || GEMS.is_severe(x, tick) || GEMS.is_hospitalized(x, tick)
 
 # Finds ego's event (if any) for this tick, then draws contacts from others
 # in the same (category, draw, section). Builds/caches a roster of every
@@ -80,20 +88,27 @@ function GEMS.sample_contacts!(
     if event_contacts.cached_tick != tick
         empty!(event_contacts.rosters)
         empty!(event_contacts.draw_rosters)
+        n_absent = 0
         for x in present_individuals
             isempty(x.event_dates) && continue
             jdx = findfirst(==(tick), x.event_dates)
             jdx === nothing && continue
+            if absent_from_events(x, tick)
+                n_absent += 1
+                continue
+            end
             section_key = (x.category_ids[jdx], x.draw_ids[jdx], x.section_ids[jdx])
             draw_key = (x.category_ids[jdx], x.draw_ids[jdx])
             push!(get!(() -> Individual[], event_contacts.rosters, section_key), x)
             push!(get!(() -> Individual[], event_contacts.draw_rosters, draw_key), x)
         end
         event_contacts.cached_tick = tick
+        n_absent > 0 && @debug "Day $tick: $n_absent assigned attendee(s) absent (dead, severe or hospitalised)"
     end
 
     idx = findfirst(==(tick), ego.event_dates)
     idx === nothing && return indivs
+    absent_from_events(ego, tick) && return indivs
 
     section_key = (ego.category_ids[idx], ego.draw_ids[idx], ego.section_ids[idx])
     draw_key = (ego.category_ids[idx], ego.draw_ids[idx])
@@ -122,6 +137,51 @@ function GEMS.sample_contacts!(
     end
 
     return indivs
+end
+
+
+# === GlobalSetting membership per day ===
+
+# GEMS puts the whole population in the GlobalSetting, but on any given day
+# only that day's event attendees do anything there (everyone else gets no
+# event contacts and transmission 0). So the GlobalSetting is given only
+# that day's attendees, and nobody on days without events: same results,
+# much less work per day.
+#
+# Passed to Batch as `setup`, so it runs once per simulation, before day 0.
+# It builds one list per event day (all events and sections of that day
+# together; EventContacts splits them by category, draw and section), then
+# installs a stepmod that GEMS runs at the end of every day to put the next
+# day's list in place. Lists keep population order, so the same seed gives
+# the same results as with the whole population in the GlobalSetting.
+#
+# expected_attendances is the total number of event attendances in the
+# population table (sum of length(event_dates)). If GEMS's individuals hold
+# a different total, the event columns didn't reach GEMS intact; that would
+# otherwise fail silently (no event contacts at all), so it stops with an error.
+function daily_global_setting!(sim, expected_attendances::Integer)
+    gs = settings(sim, GlobalSetting)[1]
+
+    # day => that day's attendees; people without events never enter a list
+    by_day = Dict{Int16,Vector{Individual}}()
+    for ind in gs.individuals
+        for d in ind.event_dates
+            push!(get!(() -> Individual[], by_day, Int16(d)), ind)
+        end
+    end
+    nobody = Individual[]
+
+    found = sum(length, values(by_day); init=0)
+    found == expected_attendances ||
+        error("GEMS's individuals hold $found event attendances, expected $expected_attendances: " *
+              "the event columns did not reach GEMS intact.")
+
+    set_day!(t) = (gs.individuals = get(by_day, t, nobody))
+
+    set_day!(tick(sim))                    # first day
+    previous = sim.stepmod                 # keep any stepmod already set
+    sim.stepmod = s -> (previous(s); set_day!(tick(s) + Int16(1)))
+    return sim
 end
 
 println("End Contacts")
