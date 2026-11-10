@@ -5,7 +5,7 @@
 # population, and assigns people to those events. Three pieces, used
 # together by 2_Interface.jl in this order:
 #   1. sample_events(event_config, rng)       - returns Vector{Event}
-#   2. prepare_population(event_config, rng)  - returns people DataFrame + labels
+#   2. prepare_population(event_config, rng, people, transmission_dist) - returns people DataFrame + labels
 #   3. assign_events!(people, events, ...)    - returns attendees Dict and core_groups,
 #                                                mutates `people` in place
 
@@ -90,19 +90,22 @@ end
 
 ## === Prepare Population ===
 
-# Loads the base population and adds every column the rest of the project
-# needs: age-group labels, empty per-person event-attendance records,
-# superspreader status, and each  person's transmission_prob.
+# Takes the base population table (chosen in 2_Interface.jl, or the
+# synthetic one in test.jl) and adds every column the rest of the project
+# needs: age-group labels, empty per-person event-attendance records, and
+# each person's transmission_prob. The table is changed in place.
 #
-# Reads general_rate, std_rate, superspreader_prob, superspreader_rate,
-# superspreader_std from global scope (set in 1_UserConfig.jl).
+# `people` needs at least id, age and sex (1 or 2) columns, plus the GEMS
+# setting ids (household, and optionally office, schoolclass, municipality).
+#
+# transmission_prob is drawn from `transmission_dist` (set in
+# 1_UserConfig.jl) and kept within [0, 1], since it's used as a probability.
 #
 # The attendance columns added here (category_ids, draw_ids, section_ids,
 # mean_event_contacts, std_event_contacts, event_dates) are also listed in
 # 2_Interface.jl's ind_extension, which is how GEMS carries them onto its
 # own Individual objects for 4_Contacts.jl and 5_Transmission.jl to read.
-function prepare_population(event_config::EventConfig, rng)
-    people = JLD2.load(joinpath(@__DIR__, "Datastorage", "people_Saalekreis.jld2"))["data"]
+function prepare_population(event_config::EventConfig, rng, people::DataFrame, transmission_dist)
 
     age_boundaries = event_config.age_boundaries
     age_groups = [age_group_label_from_idx(i, age_boundaries) for i in 1:(length(age_boundaries)+1)]
@@ -118,19 +121,10 @@ function prepare_population(event_config::EventConfig, rng)
     people.event_dates = [Int32[] for _ in 1:nrow(people)]
     people.std_event_contacts = [Float64[] for _ in 1:nrow(people)]
     people.cross_section_mean_contacts = [Float64[] for _ in 1:nrow(people)]
-people.cross_section_std_contacts = [Float64[] for _ in 1:nrow(people)]
+    people.cross_section_std_contacts = [Float64[] for _ in 1:nrow(people)]
 
-    α_normal, β_normal = gamma_params(general_rate, std_rate)
-    α_super, β_super = gamma_params(superspreader_rate, superspreader_std)
-
-    people.is_superspreader = [rand(rng) < superspreader_prob for _ in 1:nrow(people)]
-    # Gamma is unbounded above, so clamp to 1.0 since this is used as a probability.
-    people.transmission_prob = Float64[
-        min(1.0, people.is_superspreader[i] ?
-                 rand(rng, Gamma(α_super, β_super)) :
-                 rand(rng, Gamma(α_normal, β_normal)))
-        for i in 1:nrow(people)
-    ]
+    # clamped, since e.g. a Gamma can go above 1 and a Normal below 0
+    people.transmission_prob = Float64[clamp(rand(rng, transmission_dist), 0.0, 1.0) for _ in 1:nrow(people)]
 
     return people, age_groups, sex_levels
 end
@@ -288,32 +282,13 @@ function assign_events!(people::DataFrame, events::Vector{Event}, event_config::
 
         core_groups[category.id] = Int[]
 
-        if category.min_superspreaders > 0
-            available_supers = filter(idx ->
-                    people.is_superspreader[idx] &&
-                    idx ∉ all_core_members,
-                base_candidates)
-            n_super_core = min(category.min_superspreaders, length(available_supers))
-            if n_super_core < category.min_superspreaders
-                @warn "Category $(category.name): requested $(category.min_superspreaders) superspreader(s) in core but only $n_super_core available."
-            end
-            if n_super_core > 0
-                super_core = sample(rng, available_supers, n_super_core, replace=false)
-                append!(core_groups[category.id], super_core)
-            end
-        end
-
-        n_regular_core = max(0, n_core_total - length(core_groups[category.id]))
-        if n_regular_core > 0
-            core_so_far = Set(core_groups[category.id])
-            remaining_for_core = filter(idx ->
-                    idx ∉ core_so_far &&
-                    idx ∉ all_core_members,
-                base_candidates)
+        # demographically weighted, excluding anyone already core elsewhere
+        if n_core_total > 0
+            remaining_for_core = filter(idx -> idx ∉ all_core_members, base_candidates)
             core_weights = compute_weights(people, remaining_for_core, category, event_config)
-            n_to_sample = min(n_regular_core, length(remaining_for_core))
-            regular_core = sample(rng, remaining_for_core, Weights(core_weights), n_to_sample, replace=false)
-            append!(core_groups[category.id], regular_core)
+            n_to_sample = min(n_core_total, length(remaining_for_core))
+            append!(core_groups[category.id],
+                sample(rng, remaining_for_core, Weights(core_weights), n_to_sample, replace=false))
         end
 
         union!(all_core_members, core_groups[category.id])
