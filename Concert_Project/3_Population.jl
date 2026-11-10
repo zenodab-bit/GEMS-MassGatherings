@@ -90,6 +90,26 @@ end
 
 ## === Prepare Population ===
 
+# The per-person event columns, defined once here: prepare_population
+# creates them (empty), assign_events! fills them, and GEMS copies them onto
+# its own individuals (ind_extension in 2_Interface.jl and test.jl, via
+# GEMS_COLUMNS) for 4_Contacts.jl and 5_Transmission.jl to read.
+# Each entry: column name => element type of the per-person list.
+const EVENT_COLUMN_TYPES = [
+    :category_ids => Int32,
+    :draw_ids => Int32,
+    :section_ids => Int32,
+    :mean_event_contacts => Float64,
+    :event_dates => Int32,
+    :std_event_contacts => Float64,
+    :cross_section_mean_contacts => Float64,
+    :cross_section_std_contacts => Float64,
+]
+
+# Every column GEMS needs on its individuals: the event columns above plus
+# each person's transmission_prob.
+const GEMS_COLUMNS = [first.(EVENT_COLUMN_TYPES); :transmission_prob]
+
 # Takes the base population table (chosen in 2_Interface.jl, or the
 # synthetic one in test.jl) and adds every column the rest of the project
 # needs: age-group labels, empty per-person event-attendance records, and
@@ -101,10 +121,9 @@ end
 # transmission_prob is drawn from `transmission_dist` (set in
 # 1_UserConfig.jl) and kept within [0, 1], since it's used as a probability.
 #
-# The attendance columns added here (category_ids, draw_ids, section_ids,
-# mean_event_contacts, std_event_contacts, event_dates) are also listed in
-# 2_Interface.jl's ind_extension, which is how GEMS carries them onto its
-# own Individual objects for 4_Contacts.jl and 5_Transmission.jl to read.
+# The attendance columns added here are listed once, in EVENT_COLUMN_TYPES
+# above; GEMS_COLUMNS is what 2_Interface.jl and test.jl pass to GEMS as
+# ind_extension.
 function prepare_population(event_config::EventConfig, rng, people::DataFrame, transmission_dist)
 
     age_boundaries = event_config.age_boundaries
@@ -114,14 +133,10 @@ function prepare_population(event_config::EventConfig, rng, people::DataFrame, t
     people.age_group = age_group_label.(people.age, Ref(age_boundaries))
     people.age_group = categorical(people.age_group; ordered=true, levels=age_groups)
 
-    people.category_ids = [Int32[] for _ in 1:nrow(people)]
-    people.draw_ids = [Int32[] for _ in 1:nrow(people)]
-    people.section_ids = [Int32[] for _ in 1:nrow(people)]
-    people.mean_event_contacts = [Float64[] for _ in 1:nrow(people)]
-    people.event_dates = [Int32[] for _ in 1:nrow(people)]
-    people.std_event_contacts = [Float64[] for _ in 1:nrow(people)]
-    people.cross_section_mean_contacts = [Float64[] for _ in 1:nrow(people)]
-    people.cross_section_std_contacts = [Float64[] for _ in 1:nrow(people)]
+    # one empty list per person for each event column (see EVENT_COLUMN_TYPES)
+    for (col, T) in EVENT_COLUMN_TYPES
+        people[!, col] = [T[] for _ in 1:nrow(people)]
+    end
 
     # clamped, since e.g. a Gamma can go above 1 and a Normal below 0
     people.transmission_prob = Float64[clamp(rand(rng, transmission_dist), 0.0, 1.0) for _ in 1:nrow(people)]
@@ -393,6 +408,9 @@ function assign_events!(people::DataFrame, events::Vector{Event}, event_config::
             random_selected[e.id] = picked
             append!(selected[e.id], picked)
             union!(booked_today, picked)
+            length(selected[e.id]) < e.n &&
+                @warn "Event $(e.id) on day $(e.date): only $(length(selected[e.id])) of $(e.n) places filled; " *
+                      "not enough eligible people left that day."
         end
 
         # Record attendance; loyalty/random attendees become loyalty-eligible

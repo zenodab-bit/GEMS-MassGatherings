@@ -66,9 +66,8 @@ transmission_func = SettingRate(
 )
 
 # columns GEMS copies onto its own individuals, for 4_Contacts.jl and
-# 5_Transmission.jl to read
-ind_extension = [:category_ids, :draw_ids, :section_ids, :mean_event_contacts,
-    :std_event_contacts, :event_dates, :transmission_prob, :cross_section_mean_contacts, :cross_section_std_contacts]
+# 5_Transmission.jl to read (the list is defined once, in 3_Population.jl)
+ind_extension = GEMS_COLUMNS
 
 # GEMS only loads a settings file when the population is given as a file
 # path, not as a table. So with a settings file, the prepared population
@@ -111,8 +110,12 @@ gems_seed_used = isnothing(gems_seed) ? rand(RandomDevice(), 0:typemax(Int64)) :
 println("\nGEMS seed: $gems_seed_used, $(Threads.nthreads()) thread(s). " *
         "To repeat this run, set gems_seed = $gems_seed_used in 1_UserConfig.jl and use the same number of threads.")
 
-bd = BatchData(b; rd_style = "EssentialResultData", seed = gems_seed_used)
-population_for_gems isa String && rm(population_for_gems; force=true)   # temporary file, if one was written
+bd = try
+    BatchData(b; rd_style = "EssentialResultData", seed = gems_seed_used)
+finally
+    # delete the temporary population file (if one was written), even if the run fails
+    population_for_gems isa String && rm(population_for_gems; force=true)
+end
 
 event_results = Vector{Dict{String,EventCounts}}()
 for rd in runs(bd)
@@ -125,7 +128,7 @@ aggregated = aggregate_event_results(event_results)
 
 # always the project's Results folder, wherever Julia was started from
 run_folder = normpath(joinpath(@__DIR__, "..", "Results",
-    "run_$(n_simulations)sims_$(Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM"))"))
+    "run_$(n_simulations)sims_$(Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS"))"))
 mkpath(run_folder)
 
 # everything needed to rerun this run (see README, "Rerunning a run")

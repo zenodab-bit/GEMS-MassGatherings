@@ -159,8 +159,7 @@ b = Batch(
     n_runs = n_simulations,
     configfile = test_configfile,
     population = people,
-    ind_extension = [:category_ids, :draw_ids, :section_ids, :mean_event_contacts,
-    :std_event_contacts, :event_dates, :transmission_prob, :cross_section_mean_contacts, :cross_section_std_contacts],
+    ind_extension = GEMS_COLUMNS,   # defined once, in 3_Population.jl
     transmission_function = transmission_func,
     label = "Test simulation",
     setup = sim -> daily_global_setting!(sim, sum(length, people.event_dates))
