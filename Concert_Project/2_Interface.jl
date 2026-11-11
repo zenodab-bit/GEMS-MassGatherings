@@ -26,6 +26,7 @@ include("3_Population.jl")
 include("4_Contacts.jl")
 include("5_Transmission.jl")
 include("6_Analysis.jl")
+include("7_Validation.jl")
 
 # === Run ===
 n_simulations = 3
@@ -146,12 +147,8 @@ run_analysis(; aggregated, event_results, events, event_config, bd, run_folder,
 
 # validation output goes to validation.txt, then is shown on screen too
 if run_validation
-    validation_file = joinpath(run_folder, "validation.txt")
-    open(validation_file, "w") do io
-        redirect_stdout(() -> include("7_Validation.jl"), io)
-    end
-    print(read(validation_file, String))
-    println("Saved: validation")
+    run_validation_checks(; people, events, event_config, attendees,
+                          core_groups, aggregated, bd, run_folder)
 end
 
 

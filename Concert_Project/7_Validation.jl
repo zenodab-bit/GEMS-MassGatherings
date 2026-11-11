@@ -1,12 +1,8 @@
 # ===========================================================================
 # 7_Validation.jl
 #
-# Auto-run at the end of 2_Interface.jl, after 6_Analysis.jl, if
-# run_validation is true. Five independent checks against the finished
-# simulation: did assignment hit its targets, did core attendance per
-# category work as configured, do compartment totals add up, do
-# demographics match the config, and does the epidemic state roughly
-# match what the population-wide infection log implies.
+## Checks on a finished run. Including this file only defines functions;
+# run_validation_checks(...) at the bottom runs them all.
 # ===========================================================================
 
 # Population-wide SEIR compartment counts as of `tick`, computed directly
@@ -328,12 +324,24 @@ function validate_epidemic_state(aggregated, events, bd, event_config, people, a
 end
 
 
-# === Auto-run validation ===
+# === Run everything ===
 
-validate_assignment(people, events, event_config, attendees)
-validate_category_attendance(events, event_config, attendees, core_groups)
-validate_results(aggregated, events)
-validate_demographics(people, events, event_config, attendees)
-validate_epidemic_state(aggregated, events, bd, event_config, people, attendees)
+# Runs every check, writes the output to validation.txt in run_folder, then
+# shows it on screen too.
+function run_validation_checks(; people, events, event_config, attendees,
+                                 core_groups, aggregated, bd, run_folder)
+    validation_file = joinpath(run_folder, "validation.txt")
+    open(validation_file, "w") do io
+        redirect_stdout(io) do
+            validate_assignment(people, events, event_config, attendees)
+            validate_category_attendance(events, event_config, attendees, core_groups)
+            validate_results(aggregated, events)
+            validate_demographics(people, events, event_config, attendees)
+            validate_epidemic_state(aggregated, events, bd, event_config, people, attendees)
+        end
+    end
+    print(read(validation_file, String))
+    println("Saved: validation")
+end
 
 println("End Validation")
