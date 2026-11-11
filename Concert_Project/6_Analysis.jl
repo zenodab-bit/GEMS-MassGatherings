@@ -19,14 +19,14 @@
 
 # Writes per-event compartment metrics and global epidemic stats to
 # multievent_analysis.txt in run_folder.
-function print_metrics(aggregated, event_results, events, bd, run_folder, gems_seed_used, last_day)
+function print_metrics(aggregated, event_results, events, bd, run_folder, setup_seed, gems_seed_used, last_day)
     filename = "$run_folder/multievent_analysis.txt"
 
     open(filename, "w") do io
         println(io, "=== MultiEvent Analysis ===")
-        println(io, "Simulations: $n_simulations")
+        println(io, "Simulations: $(length(event_results))")
         println(io, "Events: $(length(events))")
-        println(io, "Setup seed (TOML): $seed")
+        println(io, "Setup seed (TOML): $setup_seed")
         println(io, "GEMS seed: $gems_seed_used ($(Threads.nthreads()) thread(s); " *
                     "set gems_seed to this value in the config you ran with and use the same thread count to repeat this run)")
 
@@ -274,7 +274,7 @@ end
 # colours, including GEMS's (see PLOT_COLORS in 0_Helpers.jl)
 default(palette = PLOT_PALETTE)
 
-print_metrics(aggregated, event_results, events, bd, run_folder, gems_seed_used, last_day)
+print_metrics(aggregated, event_results, events, bd, run_folder, seed, gems_seed_used, last_day)
 plot_epidemic_overview(bd, events, run_folder)
 plot_cases_by_setting(bd, events, run_folder)
 plot_event_seir(aggregated, events, run_folder)
