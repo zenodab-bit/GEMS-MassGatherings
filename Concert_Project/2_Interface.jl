@@ -25,6 +25,7 @@ include("1_UserConfig.jl")
 include("3_Population.jl")
 include("4_Contacts.jl")
 include("5_Transmission.jl")
+include("6_Analysis.jl")
 
 # === Run ===
 n_simulations = 3
@@ -140,7 +141,8 @@ save_run_info(run_folder,
 save_raw_results(run_folder, events, event_results, attendees, core_groups, people)
 
 println("\nSimulation complete.")
-include("6_Analysis.jl")
+run_analysis(; aggregated, event_results, events, event_config, bd, run_folder,
+             setup_seed = seed, gems_seed_used, last_day)
 
 # validation output goes to validation.txt, then is shown on screen too
 if run_validation

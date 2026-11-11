@@ -32,6 +32,7 @@ include("0_Helpers.jl")
 include("3_Population.jl")
 include("4_Contacts.jl")
 include("5_Transmission.jl")
+include("6_Analysis.jl")
 
 
 # === Test config ===
@@ -57,7 +58,7 @@ rng_events = Xoshiro(rand(setup_rng, UInt64))
 rng_traits = Xoshiro(rand(setup_rng, UInt64))
 rng_assign = Xoshiro(rand(setup_rng, UInt64))
 rng_population = Xoshiro(rand(setup_rng, UInt64))
-gems_seed = nothing    # or a number, to repeat a test run exactly
+gems_seed = 42    # or a number, to repeat a test run exactly
 
 # transmission, as in 1_UserConfig.jl
 transmission_dist = Gamma(gamma_params(0.3, 0.1)...)
@@ -179,9 +180,10 @@ end
 
 aggregated = aggregate_event_results(event_results)
 
-# always the project's Results folder, wherever Julia was started from
-run_folder = normpath(joinpath(@__DIR__, "..", "Results",
-    "test_$(n_simulations)sims_$(Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS"))"))
+# test_1, test_2, ...: the first number not used yet
+results_dir = normpath(joinpath(@__DIR__, "..", "Results"))
+test_number = findfirst(i -> !isdir(joinpath(results_dir, "test_$i")), 1:typemax(Int))
+run_folder = joinpath(results_dir, "test_$test_number")
 mkpath(run_folder)
 
 # everything needed to rerun this test run (test.jl holds its own config)
@@ -192,7 +194,8 @@ save_run_info(run_folder,
 save_raw_results(run_folder, events, event_results, attendees, core_groups, people)
 
 println("\nSimulation complete.")
-include("6_Analysis.jl")
+run_analysis(; aggregated, event_results, events, event_config, bd, run_folder,
+             setup_seed = seed, gems_seed_used, last_day)
 
 if run_validation
     validation_file = joinpath(run_folder, "validation.txt")

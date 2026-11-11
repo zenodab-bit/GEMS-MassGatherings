@@ -1,12 +1,8 @@
 # ===========================================================================
 # 6_Analysis.jl
 #
-# Auto-run at the end of 2_Interface.jl (after a successful simulation) to
-# write text metrics and generate every plot. Not meant to be included on
-# its own — the calls at the bottom of this file (print_metrics,
-# plot_epidemic_overview, etc.) execute immediately using variables
-# (aggregated, events, bd, run_folder, event_results, n_simulations,
-# gems_seed_used, last_day) assumed to already exist in the calling scope.
+# Text metrics and plots for a finished run. Including this file only
+# defines functions; run_analysis(...) at the bottom runs them all.
 #
 # fmt, print_table_header, print_metric_row, add_event_vlines!,
 # susceptible_attack_rates, offspring_dispersion, PLOT_COLORS and
@@ -269,17 +265,23 @@ function plot_infected_by_section(event_results, events, event_config, run_folde
     println("Saved: infected_by_section")
 end
 
-# === Auto-generate ===
-# colour-blind-friendly palette for every plot that doesn't set its own
-# colours, including GEMS's (see PLOT_COLORS in 0_Helpers.jl)
-default(palette = PLOT_PALETTE)
+# === Run everything ===
 
-print_metrics(aggregated, event_results, events, bd, run_folder, seed, gems_seed_used, last_day)
-plot_epidemic_overview(bd, events, run_folder)
-plot_cases_by_setting(bd, events, run_folder)
-plot_event_seir(aggregated, events, run_folder)
-plot_infected_boxplot(event_results, events, event_config, run_folder)
-plot_infected_by_section(event_results, events, event_config, run_folder)
+# Writes the text metrics and every plot for a finished run into run_folder.
+function run_analysis(; aggregated, event_results, events, event_config, bd,
+                        run_folder, setup_seed, gems_seed_used, last_day)
+    # colour-blind-friendly palette for every plot that doesn't set its own
+    # colours, including GEMS's (see PLOT_COLORS in 0_Helpers.jl)
+    default(palette = PLOT_PALETTE)
 
-println("\nAnalysis complete. Results saved to $run_folder")
-println("Analysis")
+    print_metrics(aggregated, event_results, events, bd, run_folder, setup_seed, gems_seed_used, last_day)
+    plot_epidemic_overview(bd, events, run_folder)
+    plot_cases_by_setting(bd, events, run_folder)
+    plot_event_seir(aggregated, events, run_folder)
+    plot_infected_boxplot(event_results, events, event_config, run_folder)
+    plot_infected_by_section(event_results, events, event_config, run_folder)
+
+    println("\nAnalysis complete. Results saved to $run_folder")
+end
+
+println("End Analysis")
