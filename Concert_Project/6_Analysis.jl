@@ -86,6 +86,48 @@ function print_metrics(aggregated, event_results, events, bd, run_folder, setup_
 end
 
 
+# Staged categories only: appends to multievent_analysis.txt, per staged
+# category and draw, the infections at each stage (all its venues together)
+# next to the stage's attendees present, as means over replicates, and the
+# same over all draws. Without staged categories nothing is written.
+function write_stage_summary(event_results, events, event_config, run_folder)
+    staged = [c for c in event_config.categories if c isa StagedCategory]
+    isempty(staged) && return
+    n_runs = length(event_results)
+    stage_mean(evs, field) = mean(sum(getfield(r[e.id], field) for e in evs; init=0) for r in event_results)
+    present_mean(evs) = mean(sum(e.n - r[e.id].absent for e in evs; init=0) for r in event_results)
+
+    open(joinpath(run_folder, "multievent_analysis.txt"), "a") do io
+        println(io, "\n\n##############################")
+        println(io, "### Staged categories: infections per stage (means over $n_runs replicate(s))")
+        println(io, "##############################")
+        for category in staged
+            println(io, "\n$(category.name) (id=$(category.id))")
+            println(io, rpad("Draw (day)", 14), " | ", rpad("Stage", 20), " | ", rpad("Venues", 7), " | ",
+                    rpad("Present", 9), " | ", rpad("Infected", 9), " | Share infected")
+            println(io, "-"^85)
+            cat_events = filter(e -> e.category_id == category.id, events)
+            for draw in sort(unique(e.draw_id for e in cat_events)), (s, stage) in enumerate(category.stages)
+                evs = filter(e -> e.draw_id == draw && e.stage_id == s, cat_events)
+                isempty(evs) && continue
+                present, infected = present_mean(evs), stage_mean(evs, :infected_at_event)
+                println(io, rpad("$draw (day $(evs[1].date))", 14), " | ", rpad(isempty(stage.name) ? "stage$s" : stage.name, 20), " | ",
+                        rpad(length(evs), 7), " | ", rpad(fmt(present), 9), " | ", rpad(fmt(infected), 9), " | ",
+                        present > 0 ? "$(fmt(100 * infected / present))%" : "n/a")
+            end
+            for (s, stage) in enumerate(category.stages)
+                evs = filter(e -> e.stage_id == s, cat_events)
+                isempty(evs) && continue
+                println(io, rpad("all draws", 14), " | ", rpad(isempty(stage.name) ? "stage$s" : stage.name, 20), " | ",
+                        rpad(length(evs), 7), " | ", rpad(fmt(present_mean(evs)), 9), " | ",
+                        fmt(stage_mean(evs, :infected_at_event)))
+            end
+        end
+    end
+    println("Stage summary added to multievent_analysis.txt")
+end
+
+
 # === Plots ===
 
 # Three-panel plot (tick cases, cumulative cases, effective R) with event
@@ -235,17 +277,27 @@ end
 function plot_infected_by_section(event_results, events, event_config, run_folder; rate=true)
     isempty(events) && return
     panels = []
-    for (cat_id, sec_id) in unique((e.category_id, e.section_id) for e in events)
+    # one panel per (category, section), or for a staged category per (stage, venue)
+    for (cat_id, stage_id, sec_id) in unique((e.category_id, e.stage_id, e.section_id) for e in events)
         category = event_config.categories[findfirst(c -> c.id == cat_id, event_config.categories)]
-        section = category.sections[findfirst(s -> s.id == sec_id, category.sections)]
         cat_label = isempty(category.name) ? "category $cat_id" : category.name
-        sec_label = !isempty(section.name) ? section.name :
-                    length(category.sections) > 1 ? "sec$sec_id" : ""
-        title = isempty(sec_label) ? cat_label : "$cat_label ($sec_label)"
+        if category isa StagedCategory
+            stage = category.stages[stage_id]
+            venue = stage.venues[sec_id]
+            stage_label = isempty(stage.name) ? "stage$stage_id" : stage.name
+            title = length(stage.venues) > 1 ?
+                    "$cat_label, $stage_label ($(isempty(venue.name) ? "venue$sec_id" : venue.name))" :
+                    "$cat_label, $stage_label"
+        else
+            section = category.sections[findfirst(s -> s.id == sec_id, category.sections)]
+            sec_label = !isempty(section.name) ? section.name :
+                        length(category.sections) > 1 ? "sec$sec_id" : ""
+            title = isempty(sec_label) ? cat_label : "$cat_label ($sec_label)"
+        end
 
         days = Int[]
         vals = Float64[]
-        for e in filter(e -> e.category_id == cat_id && e.section_id == sec_id, events)
+        for e in filter(e -> e.category_id == cat_id && e.stage_id == stage_id && e.section_id == sec_id, events)
             v = rate ? susceptible_attack_rates(event_results, e.id) :
                        Float64[r[e.id].infected_at_event for r in event_results]
             append!(vals, v)
@@ -279,6 +331,7 @@ function run_analysis(; aggregated, event_results, events, event_config, bd,
     default(palette = PLOT_PALETTE)
 
     print_metrics(aggregated, event_results, events, bd, run_folder, setup_seed, gems_seed_used, last_day)
+    write_stage_summary(event_results, events, event_config, run_folder)
     plot_epidemic_overview(bd, events, run_folder)
     plot_cases_by_setting(bd, events, run_folder)
     plot_event_seir(aggregated, events, run_folder)

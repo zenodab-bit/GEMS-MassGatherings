@@ -305,10 +305,21 @@ absent_on(t, row) = absent_on(t, row.tick, row.recovery, row.death, row.severene
 # of that event's date, by scanning the infection log once per event.
 # Absent (dead, severe or hospitalised that day) comes first; the other
 # compartments only count attendees who were actually there.
-function analyze_event_population(inf_log::DataFrame, people::DataFrame, events::Vector{Event}, attendees::Dict{String,Vector{Int}})
+#
+# Staged categories: `passes` is the run's record of infections in later
+# GlobalSetting passes ((person id, day) => stage, from run_scenario's
+# stage_passes); event infections not in it happened in pass 1. For a venue
+# of stage s, only infections in stage s count as infected at the event;
+# people infected at an earlier stage that day count with same_day_other
+# (they're no longer susceptible when stage s comes), and people infected at
+# a later stage were still susceptible here. Normal events are pass 1.
+function analyze_event_population(inf_log::DataFrame, people::DataFrame, events::Vector{Event},
+                                  attendees::Dict{String,Vector{Int}};
+                                  passes::AbstractDict = Dict{Tuple{Int32,Int16},Int}())
     results = Dict{String,EventCounts}()
 
     for event in events
+        this_pass = max(event.stage_id, 1)
         # get individual ids for this event from people DataFrame
         section_ids = Set{Int32}(people.id[idx] for idx in attendees[event.id])
 
@@ -338,7 +349,12 @@ function analyze_event_population(inf_log::DataFrame, people::DataFrame, events:
                 if row.setting_type != 'g'
                     push!(same_day_other_ids, row.id_b)
                 else
-                    push!(event_infected_ids, row.id_b)
+                    row_pass = get(passes, (Int32(row.id_b), Int16(row.tick)), 1)
+                    if row_pass == this_pass
+                        push!(event_infected_ids, row.id_b)
+                    elseif row_pass < this_pass
+                        push!(same_day_other_ids, row.id_b)   # infected at an earlier stage that day
+                    end                                       # (a later stage: still susceptible here)
                 end
             end
         end
@@ -912,7 +928,8 @@ function run_scenario(event_config::EventConfig;
     # --- per-event results ---
     event_results = Vector{Dict{String,EventCounts}}()
     for (r, rd) in enumerate(runs(bd))
-        push!(event_results, analyze_event_population(infections(rd), people, events, setup_of(r).attendees))
+        push!(event_results, analyze_event_population(infections(rd), people, events, setup_of(r).attendees;
+                                                      passes = stage_passes[r]))
     end
     aggregated = aggregate_event_results(event_results)
 

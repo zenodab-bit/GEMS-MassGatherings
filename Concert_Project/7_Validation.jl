@@ -67,8 +67,17 @@ function validate_assignment(people::DataFrame, events::Vector{Event}, event_con
     println("\nPeople attending at least one event: $total_assigned")
     println("People attending multiple events:    $multi_assigned")
 
-    # nobody may attend two events on the same day
-    n_double = count(d -> !allunique(d), people.event_dates)
+    # nobody may attend two events on the same day, except different stages
+    # of one draw of a staged category
+    n_double = count(1:nrow(people)) do i
+        ds = people.event_dates[i]
+        allunique(ds) && return false
+        any(unique(ds)) do d
+            ks = findall(==(d), ds)
+            length(ks) > 1 && !(all(k -> people.stage_ids[i][k] > 0, ks) && allunique(people.stage_ids[i][ks]) &&
+                                allequal(people.category_ids[i][ks]) && allequal(people.draw_ids[i][ks]))
+        end
+    end
     println(n_double == 0 ? "✓ no same-day double bookings" :
                             "✗ $n_double people booked twice on the same day")
 
@@ -92,6 +101,10 @@ function validate_category_attendance(events::Vector{Event}, event_config::Event
     for category in event_config.categories
         cat_events = filter(e -> e.category_id == category.id, events)
         isempty(cat_events) && continue
+        if category isa StagedCategory
+            validate_stage_attendance(category, cat_events, attendees)
+            continue
+        end
 
         # draws of this category attended, per person
         draws_per_person = Dict{Int,Int}()
@@ -124,6 +137,33 @@ function validate_category_attendance(events::Vector{Event}, event_config::Event
             for e in sort(cat_events, by=e -> (e.draw_id, e.section_id))
                 println("      $(e.name): $(count(in(core), attendees[e.id])) core of $(length(attendees[e.id]))")
             end
+        end
+    end
+end
+
+# A staged category's attendance, per draw and stage: attendees (all venues
+# together) against the stage's size, and the overlap reached against the
+# one set: how many of the stage's attendees were at the previous stage of
+# the same draw, wanted round(overlap × size).
+function validate_stage_attendance(category::StagedCategory, cat_events, attendees)
+    println("\n  $(category.name) (id=$(category.id), staged, n_draws=$(category.n_draws)):")
+    for draw in sort(unique(e.draw_id for e in cat_events))
+        previous = Set{Int}()
+        for (s, stage) in enumerate(category.stages)
+            evs = filter(e -> e.draw_id == draw && e.stage_id == s, cat_events)
+            isempty(evs) && continue
+            members = reduce(vcat, [attendees[e.id] for e in evs])
+            size_ = sum(e.n for e in evs)
+            label = "    draw $draw (day $(evs[1].date)), stage $s ($(stage.name)): $(length(members)) of $size_ places"
+            if s == 1
+                println(label)
+            else
+                wanted = round(Int, stage.overlap * size_)
+                got = count(in(previous), members)
+                println(label, "; overlap $got from stage $(s - 1), wanted $wanted ", got == wanted ? "✓" : "✗")
+            end
+            allunique(members) || println("    ✗ someone is at two venues of this stage")
+            previous = Set(members)
         end
     end
 end
@@ -166,46 +206,54 @@ function validate_demographics(people::DataFrame, events::Vector{Event}, event_c
         cat_events = filter(e -> e.category_id == category.id, events)
         isempty(cat_events) && continue
 
-        # expected share per (age group, sex) cell, built the same way
-        # compute_weights builds sampling weights: age weight x sex weight
-        n_groups = length(event_config.age_boundaries) + 1
-        mass = [(isempty(category.age_weights) ? event_config.age_dist[g] : category.age_weights[g]) *
-                (isempty(category.sex_weights) ? event_config.sex_dist[g][s] : category.sex_weights[s])
-                for g in 1:n_groups, s in 1:2]
-        mass ./= sum(mass)
-        expected_age = vec(sum(mass, dims=2))
-        expected_sex = vec(sum(mass, dims=1))
+        # a staged category's stages each have their own weights: one group per stage
+        groups = category isa StagedCategory ?
+            [(stage, "\nStaged category $(category.id), stage $s ($(stage.name)):",
+              filter(e -> e.stage_id == s, cat_events)) for (s, stage) in enumerate(category.stages)] :
+            [(category, "\nCategory $(category.id) — loyalty=$(category.loyalty):", cat_events)]
 
-        println("\nCategory $(category.id) — loyalty=$(category.loyalty):")
+        for (weights_from, header, group_events) in groups
+            # expected share per (age group, sex) cell, built the same way
+            # compute_weights builds sampling weights: age weight x sex weight
+            n_groups = length(event_config.age_boundaries) + 1
+            mass = [(isempty(weights_from.age_weights) ? event_config.age_dist[g] : weights_from.age_weights[g]) *
+                    (isempty(weights_from.sex_weights) ? event_config.sex_dist[g][s] : weights_from.sex_weights[s])
+                    for g in 1:n_groups, s in 1:2]
+            mass ./= sum(mass)
+            expected_age = vec(sum(mass, dims=2))
+            expected_sex = vec(sum(mass, dims=1))
 
-        for event in cat_events
-            idxs = attendees[event.id]
-            n = length(idxs)
-            ages = people.age[idxs]
-            sexes = people.sex[idxs]
+            println(header)
 
-            println("\n  Event $(event.id) (day=$(event.date), n=$(event.n)):")
+            for event in group_events
+                idxs = attendees[event.id]
+                n = length(idxs)
+                ages = people.age[idxs]
+                sexes = people.sex[idxs]
 
-            println("    Age distribution:")
-            for i in 1:length(event_config.age_boundaries)
-                boundary = event_config.age_boundaries[i]
+                println("\n  Event $(event.id) (day=$(event.date), n=$(event.n)):")
+
+                println("    Age distribution:")
+                for i in 1:length(event_config.age_boundaries)
+                    boundary = event_config.age_boundaries[i]
+                    expected = expected_age[i]
+                    actual_count = count(age -> age_group_idx(age, event_config.age_boundaries) == i, ages)
+                    actual = n > 0 ? actual_count / n : 0.0
+                    println("      <=$boundary: expected $(fmt(expected*100))% actual $(fmt(actual*100))% ($actual_count/$n)")
+                end
+                i = length(event_config.age_boundaries) + 1
                 expected = expected_age[i]
                 actual_count = count(age -> age_group_idx(age, event_config.age_boundaries) == i, ages)
                 actual = n > 0 ? actual_count / n : 0.0
-                println("      <=$boundary: expected $(fmt(expected*100))% actual $(fmt(actual*100))% ($actual_count/$n)")
-            end
-            i = length(event_config.age_boundaries) + 1
-            expected = expected_age[i]
-            actual_count = count(age -> age_group_idx(age, event_config.age_boundaries) == i, ages)
-            actual = n > 0 ? actual_count / n : 0.0
-            println("      >$(event_config.age_boundaries[end]): expected $(fmt(expected*100))% actual $(fmt(actual*100))% ($actual_count/$n)")
+                println("      >$(event_config.age_boundaries[end]): expected $(fmt(expected*100))% actual $(fmt(actual*100))% ($actual_count/$n)")
 
-            println("    Sex distribution:")
-            for (s, label) in [(1, "Male"), (2, "Female")]
-                expected = expected_sex[s]
-                actual_count = count(==(s), sexes)
-                actual = n > 0 ? actual_count / n : 0.0
-                println("      $label: expected $(fmt(expected*100))% actual $(fmt(actual*100))% ($actual_count/$n)")
+                println("    Sex distribution:")
+                for (s, label) in [(1, "Male"), (2, "Female")]
+                    expected = expected_sex[s]
+                    actual_count = count(==(s), sexes)
+                    actual = n > 0 ? actual_count / n : 0.0
+                    println("      $label: expected $(fmt(expected*100))% actual $(fmt(actual*100))% ($actual_count/$n)")
+                end
             end
         end
     end
@@ -281,13 +329,15 @@ end
 # one expected value per replicate.
 function expected_infected_at_events(events, people, setups, bd, event_results)
     expected = Dict(e.id => Float64[] for e in events)
-    draws = unique((e.category_id, e.draw_id) for e in events)
+    # one group per draw, and for staged categories per stage of it: each
+    # stage is its own GlobalSetting pass, with contacts only within the venue
+    draws = unique((e.category_id, e.draw_id, e.stage_id) for e in events)
 
     for (r, rd) in enumerate(runs(bd))
         s = setups[length(setups) == 1 ? 1 : r]
         inf_log = infections(rd)
-        for (cat, draw) in draws
-            group = filter(e -> e.category_id == cat && e.draw_id == draw, events)
+        for (cat, draw, stage) in draws
+            group = filter(e -> e.category_id == cat && e.draw_id == draw && e.stage_id == stage, events)
             d = group[1].date
             ids = Set{Int32}(people.id[idx] for e in group for idx in s.attendees[e.id])
             states = attendee_states(inf_log, d, ids)
