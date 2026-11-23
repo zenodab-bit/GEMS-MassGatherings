@@ -32,6 +32,13 @@ include("7_Validation.jl")
 # === Run ===
 n_simulations = 3
 run_validation = true
+# What each replicate draws for itself instead of sharing one draw (the
+# events themselves always stay the same):
+#   []                            - nothing: one setup for all replicates (default)
+#   [:attendance]                 - who attends which event
+#   [:transmission]               - everyone's transmission_prob
+#   [:attendance, :transmission]  - both
+vary_per_replicate = []
 # true: run the scenario twice, with and without its events (same seeds),
 # and compare the two (comparison.txt / .png). Takes twice as long.
 compare_without_events = false
@@ -73,6 +80,7 @@ scenario = (;
     n_simulations,
     gems_seed,
     run_validation,
+    vary_per_replicate,
     run_info_files = [joinpath(@__DIR__, f) for f in ("1_UserConfig.jl", "2_Interface.jl", "config_concert_covid.toml")],
     run_info = (; population_file))
 

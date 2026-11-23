@@ -234,7 +234,11 @@ end
 #
 # Read these as sanity checks, not formal tests: the expected values are
 # rough approximations, so only very large Z-scores deserve a closer look.
-function validate_epidemic_state(aggregated, events, bd, event_config, people, attendees)
+function validate_epidemic_state(aggregated, events, bd, event_config, people, setups)
+    # mean transmission_prob of an event's attendees, averaged over the
+    # replicates' setups (just the one when nothing varies per replicate)
+    attendee_rate(event_id) = mean(mean(s.transmission_prob[idx] for idx in s.attendees[event_id]) for s in setups)
+
     println("\n=== Epidemic State Validation ===")
 
     n_runs = length(runs(bd))
@@ -288,7 +292,7 @@ function validate_epidemic_state(aggregated, events, bd, event_config, people, a
         # replicates): absent people are left out of the contact lists
         present(e) = e.n - aggregated[e.id][:absent].mean
         n_section = present(event)
-        event_transmission_rate = mean(people.transmission_prob[idx] for idx in attendees[event.id])
+        event_transmission_rate = attendee_rate(event.id)
         exponent = n_section > 1 ?
                    metrics[:infectious].mean * event.mean_contacts *
                    event_transmission_rate / (n_section - 1) : 0.0
@@ -299,7 +303,7 @@ function validate_epidemic_state(aggregated, events, bd, event_config, people, a
                                    e.section_id != event.section_id, events)
             n_draw = n_section + sum(present(e) for e in siblings; init=0.0)
             for e in siblings
-                sibling_rate = mean(people.transmission_prob[idx] for idx in attendees[e.id])
+                sibling_rate = attendee_rate(e.id)
                 n_reachable = n_draw - present(e)
                 n_reachable > 0 || continue
                 exponent += aggregated[e.id][:infectious].mean * event.cross_section_mean_contacts *
@@ -329,15 +333,20 @@ end
 # Runs every check, writes the output to validation.txt in run_folder, then
 # shows it on screen too.
 function run_validation_checks(; people, events, event_config, attendees,
-                                 core_groups, aggregated, bd, run_folder)
+                                 core_groups, aggregated, bd, run_folder,
+                                 setups = [(; attendees, core_groups, transmission_prob = people.transmission_prob)])
     validation_file = joinpath(run_folder, "validation.txt")
     open(validation_file, "w") do io
         redirect_stdout(io) do
+            length(setups) > 1 &&
+                println("Each replicate drew its own setup (vary_per_replicate). The assignment, attendance " *
+                        "and demographics checks below use replicate 1's; every replicate's is drawn with " *
+                        "the same rules. The epidemic-state check uses all of them.")
             validate_assignment(people, events, event_config, attendees)
             validate_category_attendance(events, event_config, attendees, core_groups)
             validate_results(aggregated, events)
             validate_demographics(people, events, event_config, attendees)
-            validate_epidemic_state(aggregated, events, bd, event_config, people, attendees)
+            validate_epidemic_state(aggregated, events, bd, event_config, people, setups)
         end
     end
     print(read(validation_file, String))

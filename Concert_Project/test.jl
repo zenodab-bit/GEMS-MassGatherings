@@ -43,7 +43,9 @@ run_validation = true
 # with_events/ subfolder holds what a test run without comparison would
 compare_without_events = true
 # afterwards, also a small sweep (2 values: 3 more runs), so sweeps are
-# tested too; results in Results/test_<n>/sweep. false skips it.
+# tested too; results in Results/test_<n>/sweep. false skips it. The sweep
+# gives every replicate its own attendance and transmission_prob
+# (vary_per_replicate), so that's tested as well.
 test_sweep = true
 pop_size = 5_000       # synthetic population size
 
@@ -158,6 +160,7 @@ try
     # the events change, so the run without events is shared
     if test_sweep
         run_sweep(event_config; scenario...,
+            vary_per_replicate = [:attendance, :transmission],
             results_name = "test_$test_number/sweep",
             sweep_label = "concert window start",
             sweep_values = [10, 30],

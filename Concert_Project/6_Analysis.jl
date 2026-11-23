@@ -30,10 +30,11 @@ function print_metrics(aggregated, event_results, events, bd, run_folder, setup_
                     "set gems_seed to this value in the config you ran with and use the same thread count to repeat this run)")
 
         # --- Global epidemic metrics ---
+        # GEMS.-qualified, so a variable of the same name elsewhere (e.g. r0) can't hide them
         println(io, "\n--- Global Epidemic Metrics ---")
-        println(io, "Total infections: $(fmt(total_infections(bd)["mean"]))")
-        println(io, "Attack rate:      $(fmt(attack_rate(bd)["mean"]))")
-        println(io, "R0:               $(fmt(r0(bd)["mean"]))")
+        println(io, "Total infections: $(fmt(GEMS.total_infections(bd)["mean"]))")
+        println(io, "Attack rate:      $(fmt(GEMS.attack_rate(bd)["mean"]))")
+        println(io, "R0:               $(fmt(GEMS.r0(bd)["mean"]))")
 
         # dispersion of onward infections, one value per run
         disp = [offspring_dispersion(infections(rd), last_day) for rd in runs(bd)]
@@ -315,9 +316,11 @@ infections_before(inf_log::DataFrame, d::Integer) =
 function compare_runs(with, without, folder)
     events, last_day = with.events, with.last_day
     first_day = isempty(events) ? nothing : minimum(e.date for e in events)
-    # everyone assigned to at least one event (the same people in both runs)
-    attendee_ids = Set{Int32}(with.people.id[i] for i in eachindex(with.people.id)
-                              if !isempty(with.people.event_dates[i]))
+    # per replicate, everyone assigned to at least one event in the run with
+    # events (one shared set unless attendance varies per replicate)
+    attendee_sets = [Set{Int32}(with.people.id[i] for idxs in values(s.attendees) for i in idxs)
+                     for s in with.setups]
+    attendee_ids(r) = attendee_sets[length(attendee_sets) == 1 ? 1 : r]
 
     runs_with, runs_without = runs(with.bd), runs(without.bd)
     length(runs_with) == length(runs_without) ||
@@ -331,8 +334,8 @@ function compare_runs(with, without, folder)
         push!(daily_with, d_w)
         push!(daily_without, d_o)
 
-        att_w = count(in(attendee_ids), log_w.id_b)
-        att_o = count(in(attendee_ids), log_o.id_b)
+        att_w = count(in(attendee_ids(r)), log_w.id_b)
+        att_o = count(in(attendee_ids(r)), log_o.id_b)
         push!(rows, (
             replicate = r,
             identical_before_first_event = isnothing(first_day) ||
