@@ -14,20 +14,20 @@
 ENV["GKSwstype"] = "100"   # headless plotting backend; must be set before Plots loads
 
 import Pkg
-Pkg.activate(joinpath(@__DIR__, ".."))
+Pkg.activate(@__DIR__)
 
 using GEMS, Parameters, DataFrames, Distributions, CSV,
     CategoricalArrays, JLD2, Random, StatsBase, Plots, 
     StatsPlots, Dates, TOML
 
 # === Includes ===
-include("0_Helpers.jl")
-include("1_UserConfig.jl")
-include("3_Population.jl")
-include("4_Contacts.jl")
-include("5_Transmission.jl")
-include("6_Analysis.jl")
-include("7_Validation.jl")
+include("src/helpers.jl")
+include("config/user_config.jl")
+include("src/population.jl")
+include("src/contacts.jl")
+include("src/transmission.jl")
+include("src/analysis.jl")
+include("src/validation.jl")
 
 # === Run ===
 n_simulations = 3
@@ -78,11 +78,11 @@ sweep(day) = (; event_config = with_date(event_config, 1, day))
 # Base population: a .jld2 file holding a table under "data", with at least
 # id, age, sex (1 or 2) and the GEMS setting ids (household, and optionally
 # office, schoolclass, municipality), like the GEMS population files.
-population_file = joinpath(@__DIR__, "Datastorage", "people_Saalekreis.jld2")
+population_file = joinpath(@__DIR__, "data", "people_Saalekreis.jld2")
 # Its matching GEMS settings file (adds e.g. household coordinates, region
 # codes and schools/workplaces), or `nothing` if the population has none.
 settings_file = nothing # ! Test
-#settings_file = joinpath(@__DIR__, "Datastorage", "settings_Saalekreis.jld2") # True settings, slower
+#settings_file = joinpath(@__DIR__, "data", "settings_Saalekreis.jld2") # True settings, slower
 
 scenario = (;
     transmission_dist,
@@ -96,7 +96,7 @@ scenario = (;
     branch_day,
     n_futures,
     histories,
-    run_info_files = [joinpath(@__DIR__, f) for f in ("1_UserConfig.jl", "2_Interface.jl", "config_concert_covid.toml")],
+    run_info_files = [joinpath(@__DIR__, f) for f in ("config/user_config.jl", "run.jl", "config/config_concert_covid.toml")],
     run_info = (; population_file))
 
 results = if !isnothing(sweep_values)
@@ -108,4 +108,4 @@ else
 end
 
 
-println("End 2_Interface")
+println("End run")

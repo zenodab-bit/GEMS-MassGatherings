@@ -28,12 +28,12 @@ using GEMS, Parameters, DataFrames, Distributions, CSV,
     StatsPlots, Dates, TOML
 
 # === Includes (1_UserConfig.jl is replaced by the test config below) ===
-include("0_Helpers.jl")
-include("3_Population.jl")
-include("4_Contacts.jl")
-include("5_Transmission.jl")
-include("6_Analysis.jl")
-include("7_Validation.jl")
+include("../src/helpers.jl")
+include("../src/population.jl")
+include("../src/contacts.jl")
+include("../src/transmission.jl")
+include("../src/analysis.jl")
+include("../src/validation.jl")
 
 
 # === Test config ===
@@ -53,7 +53,7 @@ pop_size = 5_000       # synthetic population size
 # GEMS settings: the main TOML, with a shorter simulation and more initial
 # infections (the main fraction, 0.0001, would be under one person here).
 # Written to a temporary file, since GEMS reads its config from a file.
-config = TOML.parsefile(joinpath(@__DIR__, "config_concert_covid.toml"))
+config = TOML.parsefile(joinpath(@__DIR__, "..", "config", "config_concert_covid.toml"))
 config["Simulation"]["StopCriterion"]["parameters"]["limit"] = 60
 config["Simulation"]["StartCondition"]["parameters"]["fraction"] = 0.005
 test_configfile = tempname() * ".toml"
@@ -165,7 +165,7 @@ scenario = (;
     label = "Test simulation",
     results_name = "test_$test_number",
     # test.jl holds its own config, so it's what a rerun needs
-    run_info_files = [joinpath(@__DIR__, f) for f in ("test.jl", "config_concert_covid.toml")],
+    run_info_files = [joinpath(@__DIR__, "test.jl"), joinpath(@__DIR__, "..", "config", "config_concert_covid.toml")],
     run_info = (; pop_size))
 
 try

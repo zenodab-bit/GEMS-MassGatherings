@@ -102,4 +102,4 @@ event_config = EventConfig(
 
 validate_config(event_config)
 
-println("End 1_UserConfig")
+println("End user_config")
