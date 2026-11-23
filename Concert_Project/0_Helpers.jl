@@ -732,9 +732,7 @@ function run_scenario(event_config::EventConfig;
     run_labels = [(history = h, future = f) for h in history_list for f in 1:n_futures]
     labelled = !isnothing(branch_day) || !isnothing(histories)
 
-    transmission_func = SettingRate(
-        event_dates = Set{Int16}(Int16(e.date) for e in events)
-    )
+    transmission_func = SettingRate()
 
     # A GEMS batch of n_runs replicates on the prepared population `pop`
     # (a table, or the file it was written to), whose event columns are in

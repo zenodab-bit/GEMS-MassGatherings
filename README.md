@@ -195,7 +195,7 @@ All code is in `Concert_Project/`:
 | `2_Interface.jl` | The run settings (replicates, validation, population and settings files); calls `run_scenario` to run the simulations. |
 | `3_Population.jl` | Creates the events and assigns the population to them. |
 | `4_Contacts.jl` | Contact sampling for the whole simulation: normal settings (household, office, etc.) and events each use their own logic. |
-| `5_Transmission.jl` | Transmission function for the whole simulation, with the same split as above. |
+| `5_Transmission.jl` | Transmission function for the whole simulation: each infecter's own probability, and recovered people are immune. |
 | `6_Analysis.jl` | Output: text metrics and plots, the comparison with and without events, and the sweep summary. |
 | `7_Validation.jl` | Checks and extra metrics to confirm the code works correctly. |
 | `config_concert_covid.toml` | The standard GEMS configuration file. |
@@ -257,7 +257,7 @@ Each person's transmission probability is drawn once, at the very start, from `t
 
 **4_Contacts** defines how many contacts a person has in every setting, both normal ones and events. For events it handles both within-section and cross-section contacts. Attendance is fixed before the simulation, but on the event day people who are dead, severely ill or in hospital don't go: they get no event contacts and nobody can draw them as a contact. People with milder symptoms, or none yet, still go. In the per-event results, these people are counted in the **Absent** row; all other rows (susceptible, infectious, exposed, recovered) only count attendees who were actually there. It also contains `daily_global_setting!`, which `run_scenario` passes to GEMS as the batch's `setup`: before each simulation starts, it builds one list of attendees per event day and makes GEMS swap in the right list at the end of every day. It also stops with an error if the event attendances GEMS holds don't add up to those in the population table, since missing event columns would otherwise fail silently (no event contacts at all). For the run without events (see [Comparing with and without events](#comparing-with-and-without-events)), it leaves the list empty on every day.
 
-**5_Transmission** decides whether a contact results in an infection. Normal settings use the infecter's own `transmission_prob`. For events it also checks that the infecter and the infected attended the same event (any section).
+**5_Transmission** decides whether a contact results in an infection: in every setting, events included, with the infecter's own `transmission_prob`, unless the contact has already recovered (they are then immune). Who meets whom at events is decided entirely in 4_Contacts, so there's no separate "same event" check here; the Infected row of the validation tests that event contacts follow the rules.
 
 With these in place, `run_scenario` samples the events, prepares and assigns the population, and runs the GEMS simulation.
 
