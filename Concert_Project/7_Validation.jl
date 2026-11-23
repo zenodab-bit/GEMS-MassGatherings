@@ -212,33 +212,136 @@ function validate_demographics(people::DataFrame, events::Vector{Event}, event_c
 end
 
 
-# Compares each event's actual compartment counts against an analytically
-# expected value (population-wide prevalence scaled to event size, plus a
-# transmission-probability estimate for infected_at_event), as a Z-score.
-# The transmission rate used is the mean transmission_prob across this
-# event's actual attendees, not a flat population-wide constant, since
-# each person has their own transmission_prob.
+# --- Expected infections at events (the Infected row) ---
 #
-# The compartment baseline assumes attendees are a random sample of the
-# population. Core and loyal repeat attendees had extra exposure at earlier
-# draws, so in later draws recovered/infectious can sit above the baseline:
-# large Z-scores there reflect real interaction, not an error.
-#
-# The Infected row's std is binomial, sqrt(S*p*(1-p)), so it has a Z-score
-# even with one replicate. It is a lower bound: it ignores variation in the
-# number of infectious attendees, contact overdispersion and differences in
-# transmission_prob between people, which inflates Z.
-#
-# Observed is the mean over replicates, so every row's std (one run's
-# spread) is divided by sqrt(n_runs) to get the spread of that mean.
-#
-# Read these as sanity checks, not formal tests: the expected values are
-# rough approximations, so only very large Z-scores deserve a closer look.
-function validate_epidemic_state(aggregated, events, bd, event_config, people, setups)
-    # mean transmission_prob of an event's attendees, averaged over the
-    # replicates' setups (just the one when nothing varies per replicate)
-    attendee_rate(event_id) = mean(mean(s.transmission_prob[idx] for idx in s.attendees[event_id]) for s in setups)
+# A check of the event mechanism (4_Contacts.jl, 5_Transmission.jl) that
+# doesn't reuse its code: the simulation draws contacts and infections at
+# random; this computes, for each replicate, the probability of each
+# outcome from the rules the events are meant to follow, given who was
+# present and infectious on the event day:
+#   - an infectious attendee draws K contacts (negative binomial with the
+#     section's mean and std, Poisson when std^2 <= mean), capped at the
+#     number of others present in their section, and meets that many
+#     different people there, chosen at random;
+#   - with cross-section contacts, the same again with the category's
+#     cross-section mean and std, among those present in the draw's other
+#     sections;
+#   - each contact infects a susceptible with the infecter's own
+#     transmission_prob.
+# If the simulation doesn't follow these rules (e.g. contacts from the
+# wrong section, a wrong number of contacts, the wrong person's
+# transmission_prob), the observed infections drift away from these.
+# Inputs both share (the attendee lists, transmission_prob, the configured
+# contact numbers) aren't tested here.
 
+# Expected contacts of one person, E[min(K, m)]: K drawn with the given
+# mean and std, capped at m, the number of people there are to meet.
+# Written from the distributions' definitions, independently of
+# sample_n_contacts / negbin_params (0_Helpers.jl), so a mistake there
+# can't hide in the check. A negative binomial with mean μ and variance
+# σ² > μ has success probability μ/σ² and r = μ²/(σ² - μ).
+function expected_capped_contacts(mean_k, std_k, m)
+    (mean_k <= 0 || m <= 0) && return 0.0
+    v = std_k^2
+    K = v <= mean_k ? Poisson(mean_k) : NegativeBinomial(mean_k^2 / (v - mean_k), mean_k / v)
+    return sum(ccdf(K, k) for k in 0:(m - 1))   # E[min(K, m)] = Σ P(K > k), k < m
+end
+
+# The state on day d of the people in `ids`, from one replicate's infection
+# log, using each person's latest infection up to day d: :absent (dead,
+# severe or hospitalised that day, see absent_on), :infectious (infected
+# before d, infectious on d and not yet recovered), or :other (infected but
+# neither). People not in the result were never infected up to day d.
+function attendee_states(inf_log::DataFrame, d::Integer, ids::Set{Int32})
+    latest = Dict{Int32,Int}()   # id => row of the latest infection up to day d
+    for (i, (t, b)) in enumerate(zip(inf_log.tick, inf_log.id_b))
+        (t <= d && b in ids) || continue
+        j = get(latest, b, 0)
+        (j == 0 || inf_log.tick[j] <= t) && (latest[b] = i)
+    end
+    states = Dict{Int32,Symbol}()
+    for (b, i) in latest
+        row = inf_log[i, :]
+        states[b] = absent_on(d, row) ? :absent :
+                    (row.tick < d && 0 <= row.infectiousness_onset <= d &&
+                     (row.recovery > d || row.recovery == -1)) ? :infectious : :other
+    end
+    return states
+end
+
+# Per event and replicate: the expected number infected at the event. Per
+# replicate r, a susceptible attendee present in section s escapes infection
+# with probability
+#   Π over infectious i in s:            1 - c_i / m_s * p_i
+#   Π over infectious i in another section t of the draw (cross-section):
+#                                        1 - c'_i / m'_t * p_i
+# (c = expected capped contacts, m = how many others they can meet, p_i = i's
+# transmission_prob); expected infected = S_r * (1 - escape), S_r the
+# susceptible attendees present (from event_results). Returns event id =>
+# one expected value per replicate.
+function expected_infected_at_events(events, people, setups, bd, event_results)
+    expected = Dict(e.id => Float64[] for e in events)
+    draws = unique((e.category_id, e.draw_id) for e in events)
+
+    for (r, rd) in enumerate(runs(bd))
+        s = setups[length(setups) == 1 ? 1 : r]
+        inf_log = infections(rd)
+        for (cat, draw) in draws
+            group = filter(e -> e.category_id == cat && e.draw_id == draw, events)
+            d = group[1].date
+            ids = Set{Int32}(people.id[idx] for e in group for idx in s.attendees[e.id])
+            states = attendee_states(inf_log, d, ids)
+            state(idx) = get(states, Int32(people.id[idx]), :never)
+            present = Dict(e.id => [idx for idx in s.attendees[e.id] if state(idx) != :absent] for e in group)
+            infectious = Dict(e.id => [idx for idx in present[e.id] if state(idx) == :infectious] for e in group)
+            n_draw = sum(length(present[e.id]) for e in group)
+
+            for e in group   # the susceptible's section
+                escape = 1.0
+                m = length(present[e.id]) - 1
+                if m > 0
+                    c = expected_capped_contacts(e.mean_contacts, e.std_contacts, m)
+                    for i in infectious[e.id]
+                        escape *= 1 - c / m * s.transmission_prob[i]
+                    end
+                end
+                for t in group   # infecters in the draw's other sections
+                    (t.id != e.id && t.cross_section_mean_contacts > 0) || continue
+                    m2 = n_draw - length(present[t.id])
+                    m2 > 0 || continue
+                    c2 = expected_capped_contacts(t.cross_section_mean_contacts, t.cross_section_std_contacts, m2)
+                    for i in infectious[t.id]
+                        escape *= 1 - c2 / m2 * s.transmission_prob[i]
+                    end
+                end
+                push!(expected[e.id], event_results[r][e.id].susceptible * (1 - escape))
+            end
+        end
+    end
+    return expected
+end
+
+# Compares each event's actual compartment counts against an expected
+# value, as a Z-score.
+#
+# Susceptible to Absent: population-wide prevalence scaled to event size.
+# This assumes attendees are a random sample of the population. Core and
+# loyal repeat attendees had extra exposure at earlier draws, so in later
+# draws recovered/infectious can sit above the baseline: large Z-scores
+# there reflect real interaction, not an error. Observed is the mean over
+# replicates, so each of these rows' std (one run's spread) is divided by
+# sqrt(n_runs) to get the spread of that mean. Read them as sanity checks.
+#
+# Infected: the expected infections at the event, computed per replicate
+# from who was present and infectious (expected_infected_at_events above).
+# The Z-score uses the per-replicate differences, observed minus expected:
+# their mean over their standard error (std / √replicates). The spread
+# comes from the replicates themselves, since infections at an event are
+# far more variable than binomial (one infectious person with many contacts
+# can infect several at once); so it needs at least 2 replicates, and more
+# give a sharper test. This one is a real test of the event code: |Z| above
+# about 3 is worth a closer look.
+function validate_epidemic_state(aggregated, events, bd, event_config, people, setups, event_results)
     println("\n=== Epidemic State Validation ===")
 
     n_runs = length(runs(bd))
@@ -274,6 +377,8 @@ function validate_epidemic_state(aggregated, events, bd, event_config, people, s
         println("  $(rpad(label, 20)) $(rpad(fmt(expected), 12)) $(rpad(fmt(observed), 12)) $z_str")
     end
 
+    infected_expected = expected_infected_at_events(events, people, setups, bd, event_results)
+
     for event in events
         metrics = aggregated[event.id]
         pc = pop_counts[event.date]
@@ -288,32 +393,6 @@ function validate_epidemic_state(aggregated, events, bd, event_config, people, s
                                expected_recovered - expected_absent -
                                (pc.same_day_other / pop_size) * event.n
 
-        # attendees actually there (assigned minus absent, mean over
-        # replicates): absent people are left out of the contact lists
-        present(e) = e.n - aggregated[e.id][:absent].mean
-        n_section = present(event)
-        event_transmission_rate = attendee_rate(event.id)
-        exponent = n_section > 1 ?
-                   metrics[:infectious].mean * event.mean_contacts *
-                   event_transmission_rate / (n_section - 1) : 0.0
-        # cross-section contacts: an infectious person in section t draws them
-        # from everyone present in the same draw outside t
-        if event.cross_section_mean_contacts > 0
-            siblings = filter(e -> e.category_id == event.category_id && e.draw_id == event.draw_id &&
-                                   e.section_id != event.section_id, events)
-            n_draw = n_section + sum(present(e) for e in siblings; init=0.0)
-            for e in siblings
-                sibling_rate = attendee_rate(e.id)
-                n_reachable = n_draw - present(e)
-                n_reachable > 0 || continue
-                exponent += aggregated[e.id][:infectious].mean * event.cross_section_mean_contacts *
-                            sibling_rate / n_reachable
-            end
-        end
-        p_infected = 1 - exp(-exponent)
-        expected_infected = metrics[:susceptible].mean * p_infected
-        std_infected = sqrt(metrics[:susceptible].mean * p_infected * (1 - p_infected))
-
         println("\nEvent $(event.id) — Day $(event.date) — n=$(event.n)")
         println("  $(rpad("", 20)) $(rpad("Expected", 12)) $(rpad("Observed", 12)) Z-score")
         println("  " * "-"^55)
@@ -323,7 +402,13 @@ function validate_epidemic_state(aggregated, events, bd, event_config, people, s
         print_validation_row("Recovered", expected_recovered, metrics[:recovered].mean, metrics[:recovered].std)
         print_validation_row("Absent", expected_absent, metrics[:absent].mean, metrics[:absent].std)
         println("  " * "-"^55)
-        print_validation_row("Infected", expected_infected, metrics[:infected_at_event].mean, std_infected)
+        # per replicate: observed minus expected; Z = their mean / standard error
+        expected_r = infected_expected[event.id]
+        diffs = [event_results[r][event.id].infected_at_event - expected_r[r] for r in eachindex(expected_r)]
+        se = length(diffs) > 1 ? std(diffs) / sqrt(length(diffs)) : 0.0
+        z_str = se > 0 ? fmt(mean(diffs) / se) : "n/a"
+        println("  $(rpad("Infected", 20)) $(rpad(fmt(mean(expected_r)), 12)) " *
+                "$(rpad(fmt(metrics[:infected_at_event].mean), 12)) $z_str")
     end
 end
 
@@ -333,7 +418,7 @@ end
 # Runs every check, writes the output to validation.txt in run_folder, then
 # shows it on screen too.
 function run_validation_checks(; people, events, event_config, attendees,
-                                 core_groups, aggregated, bd, run_folder,
+                                 core_groups, aggregated, event_results, bd, run_folder,
                                  setups = [(; attendees, core_groups, transmission_prob = people.transmission_prob)])
     validation_file = joinpath(run_folder, "validation.txt")
     open(validation_file, "w") do io
@@ -346,7 +431,7 @@ function run_validation_checks(; people, events, event_config, attendees,
             validate_category_attendance(events, event_config, attendees, core_groups)
             validate_results(aggregated, events)
             validate_demographics(people, events, event_config, attendees)
-            validate_epidemic_state(aggregated, events, bd, event_config, people, setups)
+            validate_epidemic_state(aggregated, events, bd, event_config, people, setups, event_results)
         end
     end
     print(read(validation_file, String))

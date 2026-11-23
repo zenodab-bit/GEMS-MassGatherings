@@ -437,7 +437,10 @@ function save_run_info(run_folder, config_files::Vector{String}; settings...)
     info = Dict(
         "saved_at" => Dates.format(Dates.now(), "yyyy-mm-dd HH:MM:SS"),
         "run" => Dict(string(k) => (isnothing(v) ? "nothing" : v) for (k, v) in settings),
-        "environment" => Dict("julia_version" => string(VERSION), "threads" => Threads.nthreads()),
+        # interactive threads too: plain `julia` (1.12+) starts one, `julia -t N` none,
+        # and GEMS's random numbers differ between the two even with the same `threads`
+        "environment" => Dict("julia_version" => string(VERSION), "threads" => Threads.nthreads(),
+                              "interactive_threads" => Threads.nthreads(:interactive)),
         "code" => Dict(
             "git_commit" => git_out(`git -C $repo rev-parse HEAD`),
             "git_branch" => git_out(`git -C $repo rev-parse --abbrev-ref HEAD`),
@@ -784,7 +787,7 @@ function run_scenario(event_config::EventConfig;
     # validation output goes to validation.txt, then is shown on screen too
     if run_validation
         run_validation_checks(; people, events, event_config, attendees,
-                              core_groups, aggregated, bd, run_folder, setups)
+                              core_groups, aggregated, event_results, bd, run_folder, setups)
     end
 
     return (; events, people, attendees, core_groups, setups, bd, event_results, aggregated,
