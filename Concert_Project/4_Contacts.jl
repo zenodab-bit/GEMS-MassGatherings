@@ -159,7 +159,14 @@ end
 # population table (sum of length(event_dates)). If GEMS's individuals hold
 # a different total, the event columns didn't reach GEMS intact; that would
 # otherwise fail silently (no event contacts at all), so it stops with an error.
-function daily_global_setting!(sim, expected_attendances::Integer)
+#
+# events_on = false leaves the GlobalSetting empty on every day, so no event
+# takes place, while everything else (events, attendees, transmission_prob)
+# stays as set up. That's the run without events that run_comparison
+# (0_Helpers.jl) compares against. Before the first event day the
+# GlobalSetting is empty either way, so with the same seeds both runs are
+# identical up to that day.
+function daily_global_setting!(sim, expected_attendances::Integer; events_on::Bool = true)
     gs = settings(sim, GlobalSetting)[1]
 
     # day => that day's attendees; people without events never enter a list
@@ -176,7 +183,7 @@ function daily_global_setting!(sim, expected_attendances::Integer)
         error("GEMS's individuals hold $found event attendances, expected $expected_attendances: " *
               "the event columns did not reach GEMS intact.")
 
-    set_day!(t) = (gs.individuals = get(by_day, t, nobody))
+    set_day!(t) = (gs.individuals = events_on ? get(by_day, t, nobody) : nobody)
 
     set_day!(tick(sim))                    # first day
     previous = sim.stepmod                 # keep any stepmod already set

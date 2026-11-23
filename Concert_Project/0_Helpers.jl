@@ -8,7 +8,7 @@
 #   4. Config validation (validate_config)
 #   5. Result types & aggregation (per-event compartment counts)
 #   6. Output formatting & plotting helpers
-#   7. Running a scenario (setup_streams, run_scenario)
+#   7. Running a scenario (setup_streams, run_scenario, run_comparison)
 # ===========================================================================
 
 
@@ -551,6 +551,8 @@ end
 #                       Simulation seed
 #   gems_seed         - GEMS's seed: nothing for a new random one, or a number
 #   run_validation    - whether to run 7_Validation.jl's checks
+#   events_on         - false: everything is set up as usual, but no event
+#                       takes place (see daily_global_setting!, 4_Contacts.jl)
 #   label             - the GEMS batch label
 #   results_name      - folder name inside Results/; by default
 #                       run_<n>sims_<date and time>
@@ -569,6 +571,7 @@ function run_scenario(event_config::EventConfig;
                       setup_seed::Integer = TOML.parsefile(configfile)["Simulation"]["seed"],
                       gems_seed = nothing,
                       run_validation::Bool = true,
+                      events_on::Bool = true,
                       label::AbstractString = "MultiEvent simulation",
                       results_name = nothing,
                       run_info_files::Vector{String} = [configfile],
@@ -643,7 +646,7 @@ function run_scenario(event_config::EventConfig;
         transmission_function = transmission_func,
         label = label,
         # GlobalSetting holds only each day's event attendees (see 4_Contacts.jl)
-        setup = sim -> daily_global_setting!(sim, expected_attendances)
+        setup = sim -> daily_global_setting!(sim, expected_attendances; events_on)
     )
     # Picked here rather than by GEMS so the value is known and can be saved
     # with the results (GEMS doesn't report a seed it chose itself).
@@ -674,7 +677,7 @@ function run_scenario(event_config::EventConfig;
 
     # everything needed to rerun this run (see README, "Rerunning a run")
     save_run_info(run_folder, run_info_files;
-        n_simulations, run_validation, settings_file, run_info...,
+        n_simulations, run_validation, settings_file, events_on, run_info...,
         setup_seed, gems_seed = gems_seed_used)
     # the per-event results before they're summarised
     save_raw_results(run_folder, events, event_results, attendees, core_groups, people)
@@ -691,6 +694,50 @@ function run_scenario(event_config::EventConfig;
 
     return (; events, people, attendees, core_groups, bd, event_results, aggregated,
               run_folder, setup_seed, gems_seed_used, last_day)
+end
+
+# Runs a scenario twice, with and without its events, and compares the two
+# (compare_runs, 6_Analysis.jl). Both runs get the same setup seed (same
+# events, attendees and transmission_prob) and the same GEMS seed, so
+# replicate 1 of one run pairs with replicate 1 of the other, and so on:
+# each pair is identical up to the first event day, so what differs after
+# it comes from the events.
+#
+# Takes the same arguments as run_scenario. Results go to
+# Results/<results_name>, by default compare_<n>sims_<date and time>, with
+# one subfolder per run (with_events/, without_events/) and the comparison
+# files next to them. Validation (if switched on) runs on the run with
+# events only: its checks assume the events took place.
+#
+# Returns (; with, without, comparison, folder): the two run_scenario
+# results, the per-pair comparison table, and the folder.
+function run_comparison(event_config::EventConfig;
+                        n_simulations::Integer,
+                        gems_seed = nothing,
+                        run_validation::Bool = true,
+                        results_name = nothing,
+                        kwargs...)
+
+    isnothing(gems_seed) || gems_seed isa Integer ||
+        error("gems_seed must be nothing or an integer, got $(repr(gems_seed)).")
+    # picked once here, so both runs use the same one
+    gems_seed_used = isnothing(gems_seed) ? rand(RandomDevice(), 0:typemax(Int64)) : Int64(gems_seed)
+
+    name = something(results_name,
+        "compare_$(n_simulations)sims_$(Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS"))")
+    folder = normpath(joinpath(@__DIR__, "..", "Results", name))
+
+    println("\n######## Run 1 of 2: with events ########")
+    with = run_scenario(event_config; kwargs..., n_simulations, gems_seed = gems_seed_used,
+                        run_validation, results_name = joinpath(name, "with_events"))
+
+    println("\n######## Run 2 of 2: without events ########")
+    without = run_scenario(event_config; kwargs..., n_simulations, gems_seed = gems_seed_used,
+                           run_validation = false, events_on = false,
+                           results_name = joinpath(name, "without_events"))
+
+    comparison = compare_runs(with, without, folder)
+    return (; with, without, comparison, folder)
 end
 
 

@@ -32,6 +32,9 @@ include("7_Validation.jl")
 # === Run ===
 n_simulations = 3
 run_validation = true
+# true: run the scenario twice, with and without its events (same seeds),
+# and compare the two (comparison.txt / .png). Takes twice as long.
+compare_without_events = false
 
 # Base population: a .jld2 file holding a table under "data", with at least
 # id, age, sex (1 or 2) and the GEMS setting ids (household, and optionally
@@ -42,7 +45,7 @@ population_file = joinpath(@__DIR__, "Datastorage", "people_Saalekreis.jld2")
 settings_file = nothing # ! Test
 #settings_file = joinpath(@__DIR__, "Datastorage", "settings_Saalekreis.jld2") # True settings, slower
 
-results = run_scenario(event_config;
+scenario = (;
     transmission_dist,
     configfile,
     population = population_file,
@@ -52,6 +55,9 @@ results = run_scenario(event_config;
     run_validation,
     run_info_files = [joinpath(@__DIR__, f) for f in ("1_UserConfig.jl", "2_Interface.jl", "config_concert_covid.toml")],
     run_info = (; population_file))
+
+results = compare_without_events ? run_comparison(event_config; scenario...) :
+                                   run_scenario(event_config; scenario...)
 
 
 println("End 2_Interface")
