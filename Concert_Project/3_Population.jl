@@ -26,6 +26,10 @@ function sample_events(event_config::EventConfig, rng)
     events = Vector{Event}()
 
     for category in event_config.categories
+        if category isa StagedCategory
+            append!(events, sample_staged_events(category, rng))
+            continue
+        end
         used_dates = Set{Int}()  # track dates used by this category
 
         # sample every draw first (same RNG order as before: date, then each
@@ -87,6 +91,53 @@ function sample_events(event_config::EventConfig, rng)
     return events
 end
 
+# The same for a StagedCategory: n_draws distinct dates within its
+# date_range, each draw with one Event per venue of every stage, all on the
+# draw's date. Per draw, the random numbers are taken in this order: the
+# date, then each venue's size, stage by stage. Event ids are
+# "$(category)_$(draw)_$(stage)_$(venue)"; section_id holds the venue's
+# number within its stage, stage_id the stage's.
+function sample_staged_events(category::StagedCategory, rng)
+    used_dates = Set{Int}()
+    draws = Tuple{Int,Vector{Vector{Int}}}[]   # (date, size per venue, per stage)
+    for _ in 1:category.n_draws
+        available_dates = setdiff(category.date_range[1]:category.date_range[2], used_dates)
+        isempty(available_dates) &&
+            error("Staged category $(category.name): date_range $(category.date_range) has only " *
+                  "$(length(category.date_range[1]:category.date_range[2])) day(s) available, " *
+                  "not enough unique dates for $(category.n_draws) draws.")
+        date = rand(rng, available_dates)
+        push!(used_dates, date)
+        push!(draws, (date, [[rand(rng, v.n_range[1]:v.n_range[2]) for v in stage.venues]
+                             for stage in category.stages]))
+    end
+    sort!(draws, by=first)   # draw 1 is the earliest
+
+    events = Vector{Event}()
+    for (draw, (date, sizes)) in enumerate(draws)
+        for (s, stage) in enumerate(category.stages), (v, venue) in enumerate(stage.venues)
+            parts = String[]
+            isempty(category.name) || push!(parts, category.name)
+            category.n_draws > 1 && push!(parts, "draw$(draw)")
+            push!(parts, isempty(stage.name) ? "stage$(s)" : stage.name)
+            length(stage.venues) > 1 && push!(parts, isempty(venue.name) ? "venue$(v)" : venue.name)
+            push!(events, Event(
+                id="$(category.id)_$(draw)_$(s)_$(v)",
+                name=join(parts, "_"),
+                category_id=category.id,
+                draw_id=draw,
+                section_id=v,
+                date=date,
+                n=sizes[s][v],
+                mean_contacts=venue.mean_contacts,
+                std_contacts=venue.std_contacts,
+                stage_id=s
+            ))
+        end
+    end
+    return events
+end
+
 
 ## === Prepare Population ===
 
@@ -104,6 +155,7 @@ const EVENT_COLUMN_TYPES = [
     :std_event_contacts => Float64,
     :cross_section_mean_contacts => Float64,
     :cross_section_std_contacts => Float64,
+    :stage_ids => Int32,   # stage of a staged category; 0 for a normal one
 ]
 
 # Every column GEMS needs on its individuals: the event columns above plus
@@ -258,6 +310,11 @@ end
 # go: :event spreads them over sections at every draw, in proportion to
 # size; :section gives core a fixed home section and sends loyal attendees
 # back to their last section.
+#
+# Staged categories are filled after all other categories of a date, stage
+# by stage (fill_staged_draw! below). Within a staged draw, a person can
+# attend several stages (that's what the overlap is for), but still at most
+# one venue per stage and no other event that day.
 
 function assign_events!(people::DataFrame, events::Vector{Event}, event_config::EventConfig, rng)
     loyal_pools = Dict{Int,Set{Int}}()
@@ -272,6 +329,7 @@ function assign_events!(people::DataFrame, events::Vector{Event}, event_config::
 
     # --- PHASE 1: build each category's core group once ---
     for category in event_config.categories
+        category isa StagedCategory && continue   # no core in staged categories
         cat_events = filter(e -> e.category_id == category.id, events)
         isempty(cat_events) && continue
 
@@ -326,7 +384,8 @@ function assign_events!(people::DataFrame, events::Vector{Event}, event_config::
 
     # --- PHASE 2: fill events date by date, in three rounds per date ---
     for date in sort!(unique(e.date for e in events))
-        day_events = sort(filter(e -> e.date == date, events),
+        # normal categories' events (staged ones are filled after them, below)
+        day_events = sort(filter(e -> e.date == date && e.stage_id == 0, events),
             by=e -> (e.category_id, e.draw_id, e.section_id))
         # one draw per category per date: (category, its section events)
         day_draws = [(categories_by_id[cid], filter(e -> e.category_id == cid, day_events))
@@ -432,10 +491,76 @@ function assign_events!(people::DataFrame, events::Vector{Event}, event_config::
                 push!(people.event_dates[idx], Int32(e.date))
                 push!(people.cross_section_mean_contacts[idx], e.cross_section_mean_contacts)
                 push!(people.cross_section_std_contacts[idx], e.cross_section_std_contacts)
+                push!(people.stage_ids[idx], Int32(0))
             end
+        end
+
+        # Staged categories, after every other category of the day
+        staged_today = sort(filter(e -> e.date == date && e.stage_id > 0, events),
+            by=e -> (e.category_id, e.stage_id, e.section_id))
+        for cid in unique(e.category_id for e in staged_today)
+            fill_staged_draw!(attendees, people, categories_by_id[cid],
+                filter(e -> e.category_id == cid, staged_today), booked_today, event_config, rng)
         end
     end
     return attendees, core_groups
+end
+
+# Fills one draw of a StagedCategory (its venue events on one date), stage
+# by stage, and records the attendance:
+#   1. overlap: round(overlap × the stage's size) people drawn from the
+#      previous stage's attendees of this draw (none for the first stage);
+#   2. the rest: people at no earlier stage of this draw and at no other
+#      event that day (booked_today), within the stage's age limits;
+#   3. the stage's attendees are shuffled and spread over its venues in
+#      proportion to their sizes.
+# Draws follow the stage's demographic weights, like those of categories.
+# Afterwards everyone in the draw is added to booked_today, so no later
+# event that day can take them. Warns when the overlap or a venue can't be
+# filled.
+function fill_staged_draw!(attendees, people, category::StagedCategory, draw_events,
+                           booked_today::Set{Int}, event_config, rng)
+    in_draw = Set{Int}()      # attendees of this draw's stages so far
+    previous = Int[]          # the previous stage's attendees
+    for (s, stage) in enumerate(category.stages)
+        venues = sort(filter(e -> e.stage_id == s, draw_events), by=e -> e.section_id)
+        total = sum(e.n for e in venues)
+        eligible(idx) = stage.min_age <= people.age[idx] <= stage.max_age
+
+        n_overlap = s == 1 ? 0 : round(Int, stage.overlap * total)
+        from_previous = weighted_draw(rng, people, filter(eligible, previous), n_overlap, stage, event_config)
+        length(from_previous) < n_overlap &&
+            @warn "Staged category $(category.name), day $(venues[1].date), stage $s: overlap of $n_overlap " *
+                  "wanted, but only $(length(from_previous)) eligible people at the previous stage."
+
+        pool = filter(idx -> eligible(idx) && idx ∉ booked_today && idx ∉ in_draw, 1:nrow(people))
+        fresh = weighted_draw(rng, people, pool, total - length(from_previous), stage, event_config)
+
+        members = shuffle(rng, vcat(from_previous, fresh))
+        counts = proportional_counts(length(members), [e.n for e in venues])
+        pos = 0
+        for (e, c) in zip(venues, counts)
+            attendees[e.id] = members[pos+1:pos+c]
+            pos += c
+            c < e.n && @warn "Event $(e.id) on day $(e.date): only $c of $(e.n) places filled; " *
+                              "not enough eligible people left that day."
+            for idx in attendees[e.id]
+                push!(people.category_ids[idx], Int32(e.category_id))
+                push!(people.draw_ids[idx], Int32(e.draw_id))
+                push!(people.section_ids[idx], Int32(e.section_id))
+                push!(people.mean_event_contacts[idx], e.mean_contacts)
+                push!(people.std_event_contacts[idx], e.std_contacts)
+                push!(people.event_dates[idx], Int32(e.date))
+                push!(people.cross_section_mean_contacts[idx], 0.0)
+                push!(people.cross_section_std_contacts[idx], 0.0)
+                push!(people.stage_ids[idx], Int32(s))
+            end
+        end
+        union!(in_draw, members)
+        previous = members
+    end
+    union!(booked_today, in_draw)
+    return attendees
 end
 
 
