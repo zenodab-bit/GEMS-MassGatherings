@@ -744,8 +744,9 @@ end
 # attendees, core_groups (replicate 1's, when they vary), setups (one per
 # replicate when something varies, otherwise one shared by all: each with
 # attendees, core_groups and transmission_prob), bd (the GEMS BatchData),
-# event_results, aggregated, run_folder, setup_seed, gems_seed_used and
-# last_day.
+# event_results, aggregated, stage_passes (per run: (person id, day) =>
+# stage, for infections at later stages of staged categories), run_folder,
+# setup_seed, gems_seed_used and last_day.
 function run_scenario(event_config::EventConfig;
                       transmission_dist,
                       configfile::AbstractString,
@@ -807,6 +808,9 @@ function run_scenario(event_config::EventConfig;
     # one entry per GEMS run, in run order
     run_labels = [(history = h, future = f) for h in history_list for f in 1:n_futures]
     labelled = !isnothing(branch_day) || !isnothing(histories)
+    # staged categories need each run's record of which stage infections
+    # happened in, so their runs go one by one too
+    staged = any(c -> c isa StagedCategory, event_config.categories)
 
     transmission_func = SettingRate()
 
@@ -842,7 +846,10 @@ function run_scenario(event_config::EventConfig;
     # call works on a fresh copy and the caller's table stays as it was
     base = population isa AbstractString ? load_population(population) : copy(population)
 
-    if isempty(vary) && !labelled
+    # per run: (person id, day) => stage, for infections in the extra
+    # GlobalSetting passes of staged categories (see daily_global_setting!)
+    stage_passes = Dict{Tuple{Int32,Int16},Int}[]
+    if isempty(vary) && !labelled && !staged
         # one setup, shared by every replicate: one GEMS batch
         people, age_groups, sex_levels = prepare_population(event_config, streams.traits, base, transmission_dist)
         attendees, core_groups = assign_events!(people, events, event_config, streams.assign)
@@ -850,6 +857,7 @@ function run_scenario(event_config::EventConfig;
             BatchData(make_batch(pop, n_simulations, people); rd_style = "EssentialResultData", seed = gems_seed_used)
         end
         setups = [(; attendees, core_groups, transmission_prob = people.transmission_prob)]
+        append!(stage_passes, [Dict{Tuple{Int32,Int16},Int}() for _ in 1:n_simulations])
     else
         # The runs go one by one, the way GEMS's own batch runs them (the same
         # seed for replicate h as in a normal run), collected into one
@@ -889,6 +897,7 @@ function run_scenario(event_config::EventConfig;
                     only(GEMS.simsetups(b))(sim)
                     isnothing(branch_day) || branch!(sim, branch_day, gems_seed_used, h, f)
                     run!(sim)
+                    push!(stage_passes, copy(settings(sim, GlobalSetting)[1].contact_sampling_method.pass_infections))
                     GEMS.accumulate!(processor, PostProcessor(sim); rd_style = "EssentialResultData")
                 end
             end
@@ -934,7 +943,7 @@ function run_scenario(event_config::EventConfig;
     end
 
     return (; events, people, attendees, core_groups, setups, bd, event_results, aggregated,
-              run_folder, setup_seed, gems_seed_used, last_day)
+              stage_passes, run_folder, setup_seed, gems_seed_used, last_day)
 end
 
 # Runs a scenario twice, with and without its events, and compares the two

@@ -50,13 +50,31 @@ end
 
 # === Event Contact Sampling ===
 
-# rosters is rebuilt once per tick (see below), shared across every call
-# that tick rather than rescanning the whole population per call.
+# rosters is rebuilt once per tick and pass (see below), shared across every
+# call of that pass rather than rescanning the whole population per call.
+#
+# pass: which GlobalSetting pass of the day is running. Pass 1 is GEMS's own
+# (normal events, and the first stage of staged ones); pass s is stage s of
+# staged categories, run by daily_global_setting! at the end of the day.
+# pass_infections records, for passes after the first, who was infected in
+# which pass: (person id, day) => pass. Infections at events not in it
+# happened in pass 1.
 @with_kw mutable struct EventContacts <: GEMS.ContactSamplingMethod
     cached_tick::Int16 = Int16(-1)
-    rosters::Dict{Tuple{Int32,Int32,Int32},Vector{Individual}} = Dict{Tuple{Int32,Int32,Int32},Vector{Individual}}()
-    draw_rosters::Dict{Tuple{Int32,Int32},Vector{Individual}} = Dict{Tuple{Int32,Int32},Vector{Individual}}()
+    cached_pass::Int = 0
+    pass::Int = 1
+    rosters::Dict{NTuple{4,Int32},Vector{Individual}} = Dict{NTuple{4,Int32},Vector{Individual}}()
+    draw_rosters::Dict{NTuple{3,Int32},Vector{Individual}} = Dict{NTuple{3,Int32},Vector{Individual}}()
+    pass_infections::Dict{Tuple{Int32,Int16},Int} = Dict{Tuple{Int32,Int16},Int}()
 end
+
+# The GlobalSetting pass an attendance belongs to: stage s of a staged
+# category in pass s, normal events (stage 0) in pass 1.
+event_pass(stage_id) = max(Int(stage_id), 1)
+
+# The position of x's attendance on day `tick` in pass `pass`, or nothing.
+event_entry(x::Individual, tick::Int16, pass::Int) =
+    findfirst(k -> x.event_dates[k] == tick && event_pass(x.stage_ids[k]) == pass, eachindex(x.event_dates))
 
 # Attendance is fixed before the simulation, but on the day itself people
 # who are dead, severely ill or in hospital don't go: they're left out of
@@ -67,11 +85,11 @@ end
 absent_from_events(x::Individual, tick::Int16) =
     GEMS.is_dead(x, tick) || GEMS.is_severe(x, tick) || GEMS.is_hospitalized(x, tick)
 
-# Finds ego's event (if any) for this tick, then draws contacts from others
-# in the same (category, draw, section). Builds/caches a roster of every
-# attendee keyed by (category_id, draw_id, section_id) the first time this
-# tick is seen, so repeated calls the same day reuse it instead of
-# rescanning present_individuals each time.
+# Finds ego's event (if any) for this tick and pass, then draws contacts from
+# others in the same (category, draw, stage, section); for a staged
+# category the section is the venue. Builds/caches a roster of every
+# attendee keyed that way the first time this tick and pass are seen, so
+# repeated calls reuse it instead of rescanning present_individuals each time.
 function GEMS.sample_contacts!(
     indivs::Vector{Individual},
     event_contacts::EventContacts,
@@ -85,33 +103,35 @@ function GEMS.sample_contacts!(
     empty!(indivs)
     ego = present_individuals[individual_index]
 
-    if event_contacts.cached_tick != tick
+    pass = event_contacts.pass
+    if event_contacts.cached_tick != tick || event_contacts.cached_pass != pass
         empty!(event_contacts.rosters)
         empty!(event_contacts.draw_rosters)
         n_absent = 0
         for x in present_individuals
             isempty(x.event_dates) && continue
-            jdx = findfirst(==(tick), x.event_dates)
+            jdx = event_entry(x, tick, pass)
             jdx === nothing && continue
             if absent_from_events(x, tick)
                 n_absent += 1
                 continue
             end
-            section_key = (x.category_ids[jdx], x.draw_ids[jdx], x.section_ids[jdx])
-            draw_key = (x.category_ids[jdx], x.draw_ids[jdx])
+            section_key = (x.category_ids[jdx], x.draw_ids[jdx], x.stage_ids[jdx], x.section_ids[jdx])
+            draw_key = (x.category_ids[jdx], x.draw_ids[jdx], x.stage_ids[jdx])
             push!(get!(() -> Individual[], event_contacts.rosters, section_key), x)
             push!(get!(() -> Individual[], event_contacts.draw_rosters, draw_key), x)
         end
         event_contacts.cached_tick = tick
-        n_absent > 0 && @debug "Day $tick: $n_absent assigned attendee(s) absent (dead, severe or hospitalised)"
+        event_contacts.cached_pass = pass
+        n_absent > 0 && @debug "Day $tick, pass $pass: $n_absent assigned attendee(s) absent (dead, severe or hospitalised)"
     end
 
-    idx = findfirst(==(tick), ego.event_dates)
+    idx = event_entry(ego, tick, pass)
     idx === nothing && return indivs
     absent_from_events(ego, tick) && return indivs
 
-    section_key = (ego.category_ids[idx], ego.draw_ids[idx], ego.section_ids[idx])
-    draw_key = (ego.category_ids[idx], ego.draw_ids[idx])
+    section_key = (ego.category_ids[idx], ego.draw_ids[idx], ego.stage_ids[idx], ego.section_ids[idx])
+    draw_key = (ego.category_ids[idx], ego.draw_ids[idx], ego.stage_ids[idx])
 
     section_roster = get(event_contacts.rosters, section_key, nothing)
     same_section_others = section_roster === nothing ? Individual[] : filter(x -> x !== ego, section_roster)
@@ -166,28 +186,61 @@ end
 # (0_Helpers.jl) compares against. Before the first event day the
 # GlobalSetting is empty either way, so with the same seeds both runs are
 # identical up to that day.
+#
+# Staged categories: each stage gets its own pass through the GlobalSetting.
+# GEMS's own pass of the day holds pass 1 (normal events and the first
+# stage); at the end of the day (GEMS runs the stepmod before moving to the
+# next day, so it's still the same day), each further stage s is put in the
+# GlobalSetting and GEMS's spread_infection! runs it once more. Who gets
+# infected in those passes is recorded in the EventContacts' pass_infections.
+# The order of passes doesn't matter for who can infect whom (people infected
+# today only become infectious days later); someone infected in an earlier
+# pass just can't be infected again. GEMS never switches the GlobalSetting
+# off (deactivate! is a no-op for it), so the extra passes don't affect the
+# next day. Without staged categories there's only pass 1, as before.
 function daily_global_setting!(sim, expected_attendances::Integer; events_on::Bool = true)
     gs = settings(sim, GlobalSetting)[1]
+    csm = gs.contact_sampling_method
 
-    # day => that day's attendees; people without events never enter a list
-    by_day = Dict{Int16,Vector{Individual}}()
+    # (day, pass) => that day's attendees in that pass; people without events
+    # never enter a list
+    by_day = Dict{Tuple{Int16,Int},Vector{Individual}}()
     for ind in gs.individuals
-        for d in ind.event_dates
-            push!(get!(() -> Individual[], by_day, Int16(d)), ind)
+        for (d, s) in zip(ind.event_dates, ind.stage_ids)
+            push!(get!(() -> Individual[], by_day, (Int16(d), event_pass(s))), ind)
         end
     end
     nobody = Individual[]
+    last_pass = Dict{Int16,Int}()   # day => its number of passes
+    for (d, p) in keys(by_day)
+        last_pass[d] = max(get(last_pass, d, 1), p)
+    end
 
     found = sum(length, values(by_day); init=0)
     found == expected_attendances ||
         error("GEMS's individuals hold $found event attendances, expected $expected_attendances: " *
               "the event columns did not reach GEMS intact.")
 
-    set_day!(t) = (gs.individuals = events_on ? get(by_day, t, nobody) : nobody)
+    set_list!(t, p) = (gs.individuals = events_on ? get(by_day, (t, p), nobody) : nobody)
 
-    set_day!(tick(sim))                    # first day
+    # the passes after GEMS's own, on day t
+    function extra_passes!(s, t)
+        (events_on && !GEMS.is_dormant(s)) || return
+        for p in 2:get(last_pass, t, 1)
+            set_list!(t, p)
+            csm.pass = p
+            not_yet = [ind for ind in gs.individuals if !GEMS.infected(ind)]
+            GEMS.spread_infection!(gs, s, GEMS.pathogen(s))
+            for ind in not_yet
+                GEMS.infected(ind) && (csm.pass_infections[(Int32(GEMS.id(ind)), t)] = p)
+            end
+        end
+        csm.pass = 1
+    end
+
+    set_list!(tick(sim), 1)                # first day
     previous = sim.stepmod                 # keep any stepmod already set
-    sim.stepmod = s -> (previous(s); set_day!(tick(s) + Int16(1)))
+    sim.stepmod = s -> (previous(s); extra_passes!(s, tick(s)); set_list!(tick(s) + Int16(1), 1))
     return sim
 end
 
