@@ -8,6 +8,7 @@
 #   4. Config validation (validate_config)
 #   5. Result types & aggregation (per-event compartment counts)
 #   6. Output formatting & plotting helpers
+#   7. Running a scenario (setup_streams, run_scenario)
 # ===========================================================================
 
 
@@ -511,6 +512,185 @@ function add_event_vlines!(p, events)
             label=label,
             linewidth=1.5)
     end
+end
+
+
+## === 7. Running a scenario ===
+
+# The setup's random streams, all derived from the setup seed (the TOML's
+# Simulation seed). Each setup step gets its own stream, so changing one
+# step doesn't reshuffle the others: e.g. changing an event's size or
+# n_draws leaves everyone's transmission_prob unchanged.
+#   events     - event dates and sizes
+#   traits     - per-person traits (transmission_prob)
+#   assign     - who attends what
+#   population - a synthetic population (only test.jl uses it)
+# Created fresh on every call, so the same seed always gives the same streams.
+function setup_streams(seed::Integer)
+    setup_rng = Xoshiro(seed)
+    return (events     = Xoshiro(rand(setup_rng, UInt64)),
+            traits     = Xoshiro(rand(setup_rng, UInt64)),
+            assign     = Xoshiro(rand(setup_rng, UInt64)),
+            population = Xoshiro(rand(setup_rng, UInt64)))
+end
+
+# Runs one scenario from start to finish: samples the events, prepares the
+# population and assigns attendees, runs the GEMS batch, then analyses,
+# saves and (optionally) validates the results. 2_Interface.jl and test.jl
+# both call this, so the steps exist only here.
+#
+#   event_config      - the event categories (1_UserConfig.jl)
+#   transmission_dist - each person's transmission_prob is drawn from it
+#   configfile        - the GEMS TOML
+#   population        - the base population: a .jld2 file holding a table
+#                       under "data", or the table itself. Never changed:
+#                       every call works on its own fresh copy.
+#   settings_file     - the matching GEMS settings file, or nothing
+#   n_simulations     - number of replicates
+#   setup_seed        - seed of the setup streams; defaults to the TOML's
+#                       Simulation seed
+#   gems_seed         - GEMS's seed: nothing for a new random one, or a number
+#   run_validation    - whether to run 7_Validation.jl's checks
+#   label             - the GEMS batch label
+#   results_name      - folder name inside Results/; by default
+#                       run_<n>sims_<date and time>
+#   run_info_files    - files copied into run_info/ (see save_run_info)
+#   run_info          - extra settings written to run_info.toml
+#
+# Returns a NamedTuple with everything the run produced: events, people,
+# attendees, core_groups, bd (the GEMS BatchData), event_results,
+# aggregated, run_folder, setup_seed, gems_seed_used and last_day.
+function run_scenario(event_config::EventConfig;
+                      transmission_dist,
+                      configfile::AbstractString,
+                      population,
+                      settings_file = nothing,
+                      n_simulations::Integer,
+                      setup_seed::Integer = TOML.parsefile(configfile)["Simulation"]["seed"],
+                      gems_seed = nothing,
+                      run_validation::Bool = true,
+                      label::AbstractString = "MultiEvent simulation",
+                      results_name = nothing,
+                      run_info_files::Vector{String} = [configfile],
+                      run_info = (;))
+
+    isnothing(gems_seed) || gems_seed isa Integer ||
+        error("gems_seed must be nothing or an integer, got $(repr(gems_seed)).")
+    streams = setup_streams(setup_seed)
+
+    # --- events ---
+    events = sample_events(event_config, streams.events)
+    # sorted for readable output; assign_events! orders dates itself
+    sort!(events, by = e -> (e.date, e.category_id, e.draw_id, e.section_id))
+
+    println("\n=== Sampled Events ===")
+    for e in events
+        println("Event $(e.id) ($(e.name)) — date: $(e.date), n: $(e.n), contacts: $(e.mean_contacts)")
+    end
+
+    sim_length = TOML.parsefile(configfile)["Simulation"]["StopCriterion"]["parameters"]["limit"]
+    last_day = sim_length - 1   # GEMS simulates days 0 to limit - 1
+
+    for e in events
+        if e.date > last_day
+            @warn "Event $(e.id) on day $(e.date) is after the last simulated day ($last_day; " *
+                  "GEMS simulates days 0 to StopCriterion limit - 1). Results will be inaccurate."
+        end
+    end
+
+    # --- population and attendance ---
+    # prepare_population and assign_events! add columns to the table, so each
+    # call works on a fresh copy and the caller's table stays as it was
+    base = population isa AbstractString ? JLD2.load(population)["data"] : copy(population)
+    people, age_groups, sex_levels = prepare_population(event_config, streams.traits, base, transmission_dist)
+    attendees, core_groups = assign_events!(people, events, event_config, streams.assign)
+
+    transmission_func = SettingRate(
+        event_dates = Set{Int16}(Int16(e.date) for e in events)
+    )
+
+    # GEMS only loads a settings file when the population is given as a file
+    # path, not as a table. So with a settings file, the prepared population
+    # (with the event columns) is written to a temporary file and passed by
+    # path, then deleted after the runs; reading it back first makes sure no
+    # event column changed on the way. Without one, the table is passed
+    # directly, which is faster (no file to write, and none to read per replicate).
+    # GEMS_COLUMNS (3_Population.jl) are the columns GEMS copies onto its own
+    # individuals, for 4_Contacts.jl and 5_Transmission.jl to read.
+    if isnothing(settings_file)
+        population_for_gems = people
+    else
+        population_for_gems = tempname() * ".jld2"
+        JLD2.save(population_for_gems, "data", people)
+        let saved = JLD2.load(population_for_gems, "data")
+            for col in GEMS_COLUMNS
+                isequal(saved[!, col], people[!, col]) ||
+                    error("Column $col changed when writing the population to $population_for_gems.")
+            end
+        end
+    end
+
+    # total event attendances, checked again inside GEMS by daily_global_setting!
+    expected_attendances = sum(length, people.event_dates)
+
+    # --- GEMS ---
+    b = Batch(
+        n_runs = n_simulations,
+        configfile = configfile,
+        population = population_for_gems,
+        settingsfile = settings_file,
+        ind_extension = GEMS_COLUMNS,
+        transmission_function = transmission_func,
+        label = label,
+        # GlobalSetting holds only each day's event attendees (see 4_Contacts.jl)
+        setup = sim -> daily_global_setting!(sim, expected_attendances)
+    )
+    # Picked here rather than by GEMS so the value is known and can be saved
+    # with the results (GEMS doesn't report a seed it chose itself).
+    gems_seed_used = isnothing(gems_seed) ? rand(RandomDevice(), 0:typemax(Int64)) : Int64(gems_seed)
+    println("\nGEMS seed: $gems_seed_used, $(Threads.nthreads()) thread(s). " *
+            "To repeat this run, set gems_seed = $gems_seed_used and use the same number of threads.")
+
+    bd = try
+        BatchData(b; rd_style = "EssentialResultData", seed = gems_seed_used)
+    finally
+        # delete the temporary population file (if one was written), even if the run fails
+        population_for_gems isa String && rm(population_for_gems; force=true)
+    end
+
+    # --- per-event results ---
+    event_results = Vector{Dict{String,EventCounts}}()
+    for rd in runs(bd)
+        push!(event_results, analyze_event_population(infections(rd), people, events, attendees))
+    end
+    aggregated = aggregate_event_results(event_results)
+
+    # --- saving ---
+    # always the project's Results folder, wherever Julia was started from
+    name = something(results_name,
+        "run_$(n_simulations)sims_$(Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS"))")
+    run_folder = normpath(joinpath(@__DIR__, "..", "Results", name))
+    mkpath(run_folder)
+
+    # everything needed to rerun this run (see README, "Rerunning a run")
+    save_run_info(run_folder, run_info_files;
+        n_simulations, run_validation, settings_file, run_info...,
+        setup_seed, gems_seed = gems_seed_used)
+    # the per-event results before they're summarised
+    save_raw_results(run_folder, events, event_results, attendees, core_groups, people)
+
+    println("\nSimulation complete.")
+    run_analysis(; aggregated, event_results, events, event_config, bd, run_folder,
+                 setup_seed, gems_seed_used, last_day)
+
+    # validation output goes to validation.txt, then is shown on screen too
+    if run_validation
+        run_validation_checks(; people, events, event_config, attendees,
+                              core_groups, aggregated, bd, run_folder)
+    end
+
+    return (; events, people, attendees, core_groups, bd, event_results, aggregated,
+              run_folder, setup_seed, gems_seed_used, last_day)
 end
 
 

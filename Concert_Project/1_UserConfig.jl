@@ -11,21 +11,18 @@
 # ===========================================================================
 
 # === Simulation ===
-config = TOML.parsefile(joinpath(@__DIR__, "config_concert_covid.toml"))
-seed = config["Simulation"]["seed"]
+# GEMS settings (pathogen, settings, simulation length, ...)
+configfile = joinpath(@__DIR__, "config_concert_covid.toml")
 
-# Setup seed: same seed, same events/traits/attendance every run (not the
-# epidemic itself, see gems_seed). Each setup step gets its own random
-# stream derived from `seed`, so changing one step doesn't reshuffle the
-# others: e.g. changing an event's size or n_draws leaves everyone's
+# Setup seed: the `seed` in the TOML's [Simulation] table. Same seed, same
+# events/traits/attendance every run (not the epidemic itself, see
+# gems_seed). Each setup step gets its own random stream derived from it
+# (setup_streams in 0_Helpers.jl), so changing one step doesn't reshuffle
+# the others: e.g. changing an event's size or n_draws leaves everyone's
 # transmission_prob unchanged.
-setup_rng = Xoshiro(seed)
-rng_events = Xoshiro(rand(setup_rng, UInt64))   # event dates and sizes
-rng_traits = Xoshiro(rand(setup_rng, UInt64))   # per-person traits (transmission_prob)
-rng_assign = Xoshiro(rand(setup_rng, UInt64))   # who attends what
 
 # Epidemic seed (GEMS's own randomness: initial infections, contacts,
-# infections, disease course). Separate from `seed` above.
+# infections, disease course). Separate from the setup seed above.
 #   nothing  - a new random seed every run; it's printed and saved in the results
 #   a number - repeats that exact epidemic, e.g. a seed copied from earlier results
 #              (needs the same number of Julia threads as that run)
