@@ -30,6 +30,7 @@ Event contacts are extra contacts: GEMS calculates each person's contacts in the
    - `n_simulations`: how many replicates to run.
    - `run_validation`: whether to run the checks in `7_Validation.jl`.
    - `vary_per_replicate`: what each replicate draws for itself instead of sharing one draw: `[]` (nothing, the default), `[:attendance]`, `[:transmission]` or `[:attendance, :transmission]`. See [Varying the setup per replicate](#varying-the-setup-per-replicate).
+   - `branch_day`, `n_futures`, `histories`: run each replicate several times with the same history up to a chosen day and different futures after it, or rerun chosen replicates of an earlier run. See [Branching](#branching).
    - `compare_without_events`: `true` runs the scenario twice, with and without its events, and compares them. See [Comparing with and without events](#comparing-with-and-without-events).
    - `sweep_values`, `sweep_label`, `sweep`: run that comparison for a list of values of one setting. See [Sweeps](#sweeps).
    - `population_file`: the base population, Saalekreis by default. Any `.jld2` file holding a table under `"data"` works, with at least `id`, `age`, `sex` (1 or 2) and the GEMS setting ids (`household`, and optionally `office`, `schoolclass`, `municipality`), like the GEMS population files.
@@ -60,6 +61,23 @@ By default, all replicates of a run share one setup: the same events, the same `
 The events themselves (dates and sizes) are always shared, so sweeps over e.g. the event day keep the date you set. Each replicate's draw comes from its own random stream, derived from the setup seed and the replicate's number, so the same seeds give the same draws every time, and what doesn't vary is drawn exactly as without the option (e.g. with `[:attendance]`, everyone's `transmission_prob` is the same as with `[]`). GEMS's own seed per replicate doesn't change either. Comparisons and sweeps work the same way: replicate 1 with events pairs with replicate 1 without, which uses the same draws.
 
 What changes in the output: `attendance.jld2` holds one attendee list (and core groups) per replicate, in replicate order, and `validation.txt` checks the assignment, attendance and demographics of replicate 1's setup (every replicate's is drawn with the same rules) and uses all setups for the expected infections. Since GEMS's batch can't give each replicate its own population, the replicates are run one by one, the same way GEMS's batch runs them; it costs a few extra seconds per replicate for preparing the population and assigning attendees.
+
+### Branching
+
+Branching runs the same simulation several times, identical up to a day you choose and different after it. Each replicate is then a **history**, and each of its runs a **future**:
+
+```julia
+branch_day = 44   # the futures differ from this day on (nothing: no branching)
+n_futures = 20    # futures per history
+```
+
+Every history runs `n_futures` times. Up to day `branch_day - 1` all its futures are identical; at the end of that day, GEMS's random number generators are re-seeded, so from `branch_day` on each future goes its own way. Future 1 is not re-seeded: it is the history's own continuation, exactly as without branching. The new seeds are derived from `gems_seed`, the history and the future, so the same settings always give the same futures. A run makes `n_simulations × n_futures` GEMS runs; each future reruns the days before `branch_day`, which avoids copying a simulation in memory.
+
+For futures of a single situation, use `n_simulations = 1`; with more, you can see whether what happens after `branch_day` depends on the history.
+
+**Picking histories.** `histories = [7]` runs only replicate 7, exactly as it was in a run with the same `gems_seed` and settings (replicate *h* always gets the *h*-th seed GEMS derives from `gems_seed`). So to branch a replicate you saw in an earlier run, take that run's settings and `gems_seed` from its `run_info/` (see [Rerunning a run](#rerunning-a-run)), set `histories` to that replicate, and choose `branch_day` and `n_futures`. Several are possible, e.g. `histories = [3, 7]`.
+
+In the results, every future counts as a replicate; `event_results.csv` gets two extra columns, `history` (the replicate number) and `future`. Comparisons with and without events and sweeps work the same way: each history and future with events pairs with the same history and future without. Without branching and with `histories = nothing`, runs are exactly as before.
 
 ### Speed
 
@@ -254,7 +272,7 @@ With these in place, `run_scenario` samples the events, prepares and assigns the
 | `multievent_analysis.txt` | Seeds, global metrics (infections, attack rate, R0, offspring k) and, per event, each compartment summarised across replicates (mean, std, min, quartiles, max) plus the two rates |
 | `validation.txt` | The validation output (only if `run_validation` is `true`) |
 | `events.csv` | One row per event: id, name, category, draw, section, date, size, contact rates |
-| `event_results.csv` | One row per replicate and event, with every compartment count before summarising |
+| `event_results.csv` | One row per replicate and event, with every compartment count before summarising. With branching or picked histories, also `history` and `future` columns. |
 | `attendance.jld2` | Who was assigned to each event (`"attendees"`: event id => person ids) and each category's core group (`"core_groups"`: category id => person ids). With `vary_per_replicate` set (not `[]`), both are a list with one such entry per replicate. |
 | `*.png` | The plots |
 | `run_info/` | Everything needed to rerun the run (see [Rerunning a run](#rerunning-a-run)) |

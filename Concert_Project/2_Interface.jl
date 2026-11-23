@@ -39,6 +39,18 @@ run_validation = true
 #   [:transmission]               - everyone's transmission_prob
 #   [:attendance, :transmission]  - both
 vary_per_replicate = []
+
+# Branching: every replicate (a "history") runs n_futures times, identical
+# up to day branch_day - 1, each with its own random numbers from
+# branch_day on. Future 1 is the history's own continuation, as without
+# branching. branch_day = nothing: no branching.
+branch_day = nothing
+n_futures = 1
+# Which replicates to run, by number: nothing for all (1 to n_simulations),
+# or e.g. [7] to rerun replicate 7 of an earlier run exactly (with that
+# run's gems_seed and settings, see README "Rerunning a run"), e.g. to
+# branch it.
+histories = nothing
 # true: run the scenario twice, with and without its events (same seeds),
 # and compare the two (comparison.txt / .png). Takes twice as long.
 compare_without_events = false
@@ -81,6 +93,9 @@ scenario = (;
     gems_seed,
     run_validation,
     vary_per_replicate,
+    branch_day,
+    n_futures,
+    histories,
     run_info_files = [joinpath(@__DIR__, f) for f in ("1_UserConfig.jl", "2_Interface.jl", "config_concert_covid.toml")],
     run_info = (; population_file))
 
