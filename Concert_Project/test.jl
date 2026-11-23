@@ -14,7 +14,7 @@
 # section modes, core, loyalty, cross-section contacts) so
 # that a change breaking one of them shows up here.
 #
-# Run from the project folder: julia Concert_Project/test.jl
+# Run from the project folder: julia -t 8 Concert_Project/test.jl
 # ===========================================================================
 
 ENV["GKSwstype"] = "100"   # headless plotting backend; must be set before Plots loads

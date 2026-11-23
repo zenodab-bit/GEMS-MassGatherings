@@ -535,6 +535,20 @@ function setup_streams(seed::Integer)
             population = Xoshiro(rand(setup_rng, UInt64)))
 end
 
+# The base population table from a .jld2 file (the table under "data").
+load_population(file::AbstractString) = JLD2.load(file)["data"]
+
+# The run_scenario settings `kwargs` with a population file replaced by its
+# table, loaded once. Used by run_comparison and run_sweep, which call
+# run_scenario several times: without it, every run would read the file
+# again (about 10 s for Saalekreis). Same results either way, since
+# run_scenario always works on its own copy of the table.
+function population_loaded_once(kwargs)
+    settings = values(kwargs)   # a NamedTuple
+    haskey(settings, :population) && settings.population isa AbstractString || return settings
+    return merge(settings, (; population = load_population(settings.population)))
+end
+
 # Runs one scenario from start to finish: samples the events, prepares the
 # population and assigns attendees, runs the GEMS batch, then analyses,
 # saves and (optionally) validates the results. 2_Interface.jl and test.jl
@@ -605,7 +619,7 @@ function run_scenario(event_config::EventConfig;
     # --- population and attendance ---
     # prepare_population and assign_events! add columns to the table, so each
     # call works on a fresh copy and the caller's table stays as it was
-    base = population isa AbstractString ? JLD2.load(population)["data"] : copy(population)
+    base = population isa AbstractString ? load_population(population) : copy(population)
     people, age_groups, sex_levels = prepare_population(event_config, streams.traits, base, transmission_dist)
     attendees, core_groups = assign_events!(people, events, event_config, streams.assign)
 
@@ -652,6 +666,9 @@ function run_scenario(event_config::EventConfig;
     # Picked here rather than by GEMS so the value is known and can be saved
     # with the results (GEMS doesn't report a seed it chose itself).
     gems_seed_used = isnothing(gems_seed) ? rand(RandomDevice(), 0:typemax(Int64)) : Int64(gems_seed)
+    Threads.nthreads() == 1 &&
+        println("\nRunning on 1 thread. Starting Julia with more, e.g. `julia -t 8 ...`, makes the " *
+                "simulation about twice as fast (see README, \"Speed\").")
     println("\nGEMS seed: $gems_seed_used, $(Threads.nthreads()) thread(s). " *
             "To repeat this run, set gems_seed = $gems_seed_used and use the same number of threads.")
 
@@ -727,6 +744,8 @@ function run_comparison(event_config::EventConfig;
     name = something(results_name,
         "compare_$(n_simulations)sims_$(Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS"))")
     folder = normpath(joinpath(@__DIR__, "..", "Results", name))
+
+    kwargs = population_loaded_once(kwargs)
 
     println("\n######## Run 1 of 2: with events ########")
     with = run_scenario(event_config; kwargs..., n_simulations, gems_seed = gems_seed_used,
@@ -807,6 +826,7 @@ function run_sweep(event_config::EventConfig;
     # picked once here, so every run uses the same one
     gems_seed_used = isnothing(gems_seed) ? rand(RandomDevice(), 0:typemax(Int64)) : Int64(gems_seed)
 
+    kwargs = population_loaded_once(kwargs)
     overrides = [sweep(v) for v in sweep_values]
     for (v, o) in zip(sweep_values, overrides)
         o isa NamedTuple ||
