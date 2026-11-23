@@ -11,8 +11,9 @@
 # (test_sweep), so those parts are tested as well.
 #
 # The config uses most features (several categories and sections, both
-# section modes, core, loyalty, cross-section contacts) so
-# that a change breaking one of them shows up here.
+# section modes, core, loyalty, cross-section contacts, a staged category
+# with several venues and an overlap) so that a change breaking one of them
+# shows up here.
 #
 # Run from the project folder: julia -t 8 Concert_Project/test.jl
 # ===========================================================================
@@ -116,8 +117,23 @@ category_3 = Category(
     section_mode = :event
 )
 
+# staged: 5 restaurants, then a match in 2 stadiums, 10% of the match from
+# the restaurants; each stage with its own age limits
+category_4 = StagedCategory(
+    id = 4,
+    name = "football",
+    date_range = (14, 28),
+    n_draws = 2,
+    stages = [
+        Stage(name = "restaurants", min_age = 16,
+              venues = [Venue(name = "r$i", n_range = (20, 40), mean_contacts = 3.0, std_contacts = 4.0) for i in 1:5]),
+        Stage(name = "match", overlap = 0.1, min_age = 10, max_age = 90,
+              venues = [Venue(name = "stadium$i", n_range = (300, 500), mean_contacts = 8.0, std_contacts = 12.0) for i in 1:2]),
+    ]
+)
+
 event_config = EventConfig(
-    categories = [category_1, category_2, category_3],
+    categories = [category_1, category_2, category_3, category_4],
     age_boundaries = [45, 65],
     age_dist = [0.211, 0.347, 0.442],
     sex_dist = [[0.420, 0.580], [0.395, 0.605], [0.426, 0.574]]
@@ -156,15 +172,15 @@ try
     compare_without_events ? run_comparison(event_config; scenario...) :
                              run_scenario(event_config; scenario...)
 
-    # moves the concert's (category 3, two draws) 10-day date window; only
-    # the events change, so the run without events is shared
+    # moves the staged football's (category 4, two draws) 10-day date
+    # window; only the events change, so the run without events is shared
     if test_sweep
         run_sweep(event_config; scenario...,
             vary_per_replicate = [:attendance, :transmission],
             results_name = "test_$test_number/sweep",
-            sweep_label = "concert window start",
+            sweep_label = "football window start",
             sweep_values = [10, 30],
-            sweep = start -> (; event_config = with_date_range(event_config, 3, (start, start + 10))))
+            sweep = start -> (; event_config = with_date_range(event_config, 4, (start, start + 10))))
     end
 finally
     rm(test_configfile; force=true)

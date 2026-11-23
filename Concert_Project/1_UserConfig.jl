@@ -75,6 +75,24 @@ category_2 = Category(
     loyalty = 0
 )
 
+# A staged category (see README, "Staged categories"): stages on the same
+# day, here a match in one stadium (stage 1) and 10 restaurants (stage 2).
+# The restaurants' overlap of 0.3 means 30% of their guests are people from
+# the match; the other 70% didn't go to the match. To use it, uncomment it
+# and add category_3 to `categories` below.
+# category_3 = StagedCategory(
+#     id = 3,
+#     name = "football",
+#     date_range = (20, 50),
+#     n_draws = 2,
+#     stages = [
+#         Stage(name = "match", min_age = 6,
+#               venues = [Venue(name = "stadium", n_range = (20000, 25000), mean_contacts = 10.0, std_contacts = 15.0)]),
+#         Stage(name = "restaurants", overlap = 0.3, min_age = 16,
+#               venues = [Venue(name = "restaurant$i", n_range = (40, 80), mean_contacts = 4.0, std_contacts = 6.0) for i in 1:10]),
+#     ]
+# )
+
 event_config = EventConfig(
     categories = [category_1, category_2],
     age_boundaries = [45, 65],
