@@ -1,14 +1,14 @@
 # ===========================================================================
-# 2_Interface.jl
+# run.jl
 #
 # Run this file to run a simulation. Loads packages, includes every other
-# file, then calls run_scenario (0_Helpers.jl), which samples events and
-# population from 1_UserConfig.jl's event_config, runs the GEMS batch, then
+# file, then calls run_scenario (src/scenario.jl), which samples events and
+# population from config/user_config.jl's event_config, runs the GEMS batch, then
 # triggers analysis and (optionally) validation.
 #
 # The settings below (n_simulations, run_validation, the comparison and
 # sweep, and the population files) are the main things to adjust here;
-# everything else you'd want to change lives in 1_UserConfig.jl.
+# everything else you'd want to change lives in config/user_config.jl.
 # ===========================================================================
 
 ENV["GKSwstype"] = "100"   # headless plotting backend; must be set before Plots loads
@@ -21,13 +21,19 @@ using GEMS, Parameters, DataFrames, Distributions, CSV,
     StatsPlots, Dates, TOML
 
 # === Includes ===
-include("src/helpers.jl")
-include("config/user_config.jl")
-include("src/population.jl")
+include("src/utils.jl")
+include("src/config.jl")
+include("src/events.jl")
+include("src/attendance.jl")
 include("src/contacts.jl")
 include("src/transmission.jl")
+include("src/results.jl")
+include("src/scenario.jl")
+include("src/comparison.jl")
+include("src/sweeps.jl")
 include("src/analysis.jl")
 include("src/validation.jl")
+include("config/user_config.jl")   # after src/: it uses the structs defined there
 
 # === Run ===
 n_simulations = 3
@@ -58,7 +64,7 @@ compare_without_events = false
 # Sweep: runs the comparison above once per value in sweep_values, to see
 # how the events' effect depends on one setting (sweep.txt / .png). `sweep`
 # says what changes for each value; anything it doesn't return stays as set
-# here and in 1_UserConfig.jl. sweep_values = nothing: no sweep.
+# here and in config/user_config.jl. sweep_values = nothing: no sweep.
 # Pick one of the two blocks below (or write your own):
 sweep_values = nothing
 
@@ -69,7 +75,7 @@ sweep_label = "event day"
 sweep(day) = (; event_config = with_date(event_config, 1, day))
 
 # 2. The average transmission probability (std kept at 0.1, as in
-#    1_UserConfig.jl). This changes the whole epidemic, so every value gets
+#    config/user_config.jl). This changes the whole epidemic, so every value gets
 #    its own run without events: twice the runs of sweep 1.
 # sweep_values = [0.2, 0.25, 0.3, 0.35, 0.4]
 # sweep_label = "mean transmission"

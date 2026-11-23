@@ -1,5 +1,5 @@
 # ===========================================================================
-# 5_Transmission.jl
+# transmission.jl
 #
 # Extends GEMS's transmission_probability for SettingRate: in every setting,
 # events included, a contact infects with the infecter's own
@@ -7,18 +7,18 @@
 # immunity: without this check GEMS would let recovered people be infected
 # again).
 #
-# Who meets whom at events is decided entirely in 4_Contacts.jl: contacts
+# Who meets whom at events is decided entirely in contacts.jl: contacts
 # come only from the attendee's own section (plus cross-section contacts
 # within the same draw), so there's no "same event" check here. The exact
-# expected-infections check in 7_Validation.jl tests that this holds.
+# expected-infections check in validation.jl tests that this holds.
 # ===========================================================================
 
 import GEMS.transmission_probability
 
 # Transmission itself uses each person's transmission_prob (set in
-# 3_Population.jl), so there's no rate parameter here. GEMS first builds one
+# attendance.jl), so there's no rate parameter here. GEMS first builds one
 # from the TOML (its `parameters` table must exist but can be empty), then
-# run_scenario (0_Helpers.jl) passes its own.
+# run_scenario (scenario.jl) passes its own.
 struct SettingRate <: GEMS.TransmissionFunction end
 
 function GEMS.transmission_probability(

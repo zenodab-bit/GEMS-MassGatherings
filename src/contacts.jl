@@ -1,5 +1,5 @@
 # ===========================================================================
-# 4_Contacts.jl
+# contacts.jl
 #
 # Extends GEMS's sample_contacts! for two ContactSamplingMethods, dispatched
 # by the "type" set in each setting's TOML config: NegBinContacts for
@@ -183,7 +183,7 @@ end
 # events_on = false leaves the GlobalSetting empty on every day, so no event
 # takes place, while everything else (events, attendees, transmission_prob)
 # stays as set up. That's the run without events that run_comparison
-# (0_Helpers.jl) compares against. Before the first event day the
+# (comparison.jl) compares against. Before the first event day the
 # GlobalSetting is empty either way, so with the same seeds both runs are
 # identical up to that day.
 #

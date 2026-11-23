@@ -1,150 +1,18 @@
 # ===========================================================================
-# 3_Population.jl
+# attendance.jl
 #
-# Turns an EventConfig into concrete events and a simulation-ready
-# population, and assigns people to those events. Three pieces, used
-# together by 2_Interface.jl in this order:
-#   1. sample_events(event_config, rng)       - returns Vector{Event}
-#   2. prepare_population(event_config, rng, people, transmission_dist) - returns people DataFrame + labels
-#   3. assign_events!(people, events, ...)    - returns attendees Dict and core_groups,
-#                                                mutates `people` in place
-
+# Prepares the population (its event columns and transmission_prob) and
+# assigns people to the events: core, loyalty and random fill for
+# categories, overlap and fill stage by stage for staged categories
+# (assign_events!, fill_staged_draw!).
 # ===========================================================================
-
-
-## === Sample Events ===
-
-# Turns an EventConfig into concrete Event objects: for each Category,
-# draws n_draws distinct dates within its date_range, and for each date
-# creates one Event per Section (sections of one draw share that date).
-# Draws are numbered by date: draw 1 is the earliest.
-#
-# Date uniqueness is tracked per category, not globally, so two different
-# categories can coincidentally land on the same date;
-# the same-day conflict check in assign_events! handles it.
-function sample_events(event_config::EventConfig, rng)
-    events = Vector{Event}()
-
-    for category in event_config.categories
-        if category isa StagedCategory
-            append!(events, sample_staged_events(category, rng))
-            continue
-        end
-        used_dates = Set{Int}()  # track dates used by this category
-
-        # sample every draw first (same RNG order as before: date, then each
-        # section's size), then number draws by date so draw 1 is the earliest
-        draws = Tuple{Int,Vector{Int}}[]   # (date, size per section)
-        for _ in 1:category.n_draws
-            available_dates = setdiff(category.date_range[1]:category.date_range[2], used_dates)
-
-            if isempty(available_dates)
-                error("Category $(category.name): date_range $(category.date_range) has only " *
-                      "$(length(category.date_range[1]:category.date_range[2])) day(s) available, " *
-                      "not enough unique dates for $(category.n_draws) draws.")
-            end
-
-            date = rand(rng, available_dates)
-            push!(used_dates, date)
-            push!(draws, (date, [rand(rng, s.n_range[1]:s.n_range[2]) for s in category.sections]))
-        end
-        sort!(draws, by=first)
-
-        for (draw, (date, sizes)) in enumerate(draws)
-            for (section, n) in zip(category.sections, sizes)
-                id = "$(category.id)_$(draw)_$(section.id)"
-
-                # Build a readable name from whatever parts apply; falls back to id.
-                parts = String[]
-                if !isempty(category.name)
-                    push!(parts, category.name)
-                end
-                if category.n_draws > 1
-                    push!(parts, "draw$(draw)")
-                end
-                if length(category.sections) > 1
-                    if !isempty(section.name)
-                        push!(parts, section.name)
-                    else
-                        push!(parts, "sec$(section.id)")
-                    end
-                end
-                name = isempty(parts) ? id : join(parts, "_")
-
-                push!(events, Event(
-                    id=id,
-                    name=name,
-                    category_id=category.id,
-                    draw_id=draw,
-                    section_id=section.id,
-                    date=date,
-                    n=n,
-                    mean_contacts=section.mean_contacts,
-                    std_contacts=section.std_contacts,
-                    cross_section_mean_contacts=category.cross_section_mean_contacts,
-                    cross_section_std_contacts=category.cross_section_std_contacts
-                ))
-            end
-        end
-    end
-
-    return events
-end
-
-# The same for a StagedCategory: n_draws distinct dates within its
-# date_range, each draw with one Event per venue of every stage, all on the
-# draw's date. Per draw, the random numbers are taken in this order: the
-# date, then each venue's size, stage by stage. Event ids are
-# "$(category)_$(draw)_$(stage)_$(venue)"; section_id holds the venue's
-# number within its stage, stage_id the stage's.
-function sample_staged_events(category::StagedCategory, rng)
-    used_dates = Set{Int}()
-    draws = Tuple{Int,Vector{Vector{Int}}}[]   # (date, size per venue, per stage)
-    for _ in 1:category.n_draws
-        available_dates = setdiff(category.date_range[1]:category.date_range[2], used_dates)
-        isempty(available_dates) &&
-            error("Staged category $(category.name): date_range $(category.date_range) has only " *
-                  "$(length(category.date_range[1]:category.date_range[2])) day(s) available, " *
-                  "not enough unique dates for $(category.n_draws) draws.")
-        date = rand(rng, available_dates)
-        push!(used_dates, date)
-        push!(draws, (date, [[rand(rng, v.n_range[1]:v.n_range[2]) for v in stage.venues]
-                             for stage in category.stages]))
-    end
-    sort!(draws, by=first)   # draw 1 is the earliest
-
-    events = Vector{Event}()
-    for (draw, (date, sizes)) in enumerate(draws)
-        for (s, stage) in enumerate(category.stages), (v, venue) in enumerate(stage.venues)
-            parts = String[]
-            isempty(category.name) || push!(parts, category.name)
-            category.n_draws > 1 && push!(parts, "draw$(draw)")
-            push!(parts, isempty(stage.name) ? "stage$(s)" : stage.name)
-            length(stage.venues) > 1 && push!(parts, isempty(venue.name) ? "venue$(v)" : venue.name)
-            push!(events, Event(
-                id="$(category.id)_$(draw)_$(s)_$(v)",
-                name=join(parts, "_"),
-                category_id=category.id,
-                draw_id=draw,
-                section_id=v,
-                date=date,
-                n=sizes[s][v],
-                mean_contacts=venue.mean_contacts,
-                std_contacts=venue.std_contacts,
-                stage_id=s
-            ))
-        end
-    end
-    return events
-end
-
 
 ## === Prepare Population ===
 
 # The per-person event columns, defined once here: prepare_population
 # creates them (empty), assign_events! fills them, and GEMS copies them onto
-# its own individuals (ind_extension in 2_Interface.jl and test.jl, via
-# GEMS_COLUMNS) for 4_Contacts.jl and 5_Transmission.jl to read.
+# its own individuals (ind_extension in run_scenario, scenario.jl, via
+# GEMS_COLUMNS) for contacts.jl and transmission.jl to read.
 # Each entry: column name => element type of the per-person list.
 const EVENT_COLUMN_TYPES = [
     :category_ids => Int32,
@@ -162,7 +30,7 @@ const EVENT_COLUMN_TYPES = [
 # each person's transmission_prob.
 const GEMS_COLUMNS = [first.(EVENT_COLUMN_TYPES); :transmission_prob]
 
-# Takes the base population table (chosen in 2_Interface.jl, or the
+# Takes the base population table (chosen in run.jl, or the
 # synthetic one in test.jl) and adds every column the rest of the project
 # needs: age-group labels, empty per-person event-attendance records, and
 # each person's transmission_prob. The table is changed in place.
@@ -171,10 +39,10 @@ const GEMS_COLUMNS = [first.(EVENT_COLUMN_TYPES); :transmission_prob]
 # setting ids (household, and optionally office, schoolclass, municipality).
 #
 # transmission_prob is drawn from `transmission_dist` (set in
-# 1_UserConfig.jl) and kept within [0, 1], since it's used as a probability.
+# config/user_config.jl) and kept within [0, 1], since it's used as a probability.
 #
 # The attendance columns added here are listed once, in EVENT_COLUMN_TYPES
-# above; GEMS_COLUMNS is what 2_Interface.jl and test.jl pass to GEMS as
+# above; GEMS_COLUMNS is what run_scenario (scenario.jl) passes to GEMS as
 # ind_extension.
 function prepare_population(event_config::EventConfig, rng, people::DataFrame, transmission_dist)
 
@@ -564,4 +432,4 @@ function fill_staged_draw!(attendees, people, category::StagedCategory, draw_eve
 end
 
 
-println("End Population")
+println("End attendance")

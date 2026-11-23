@@ -1,12 +1,12 @@
 # ===========================================================================
-# 1_UserConfig.jl
+# config/user_config.jl
 #
 # Edit this file to configure a simulation: transmission parameters and
-# event categories. This and 2_Interface.jl are the only
+# event categories. This and run.jl are the only
 # files you should need to touch to run a simulation with different
 # settings — everything else is internal machinery.
 #
-# See Section/Category/EventConfig field comments in 0_Helpers.jl for what
+# See Section/Category/EventConfig field comments in src/config.jl for what
 # each parameter below means and its constraints.
 # ===========================================================================
 
@@ -17,7 +17,7 @@ configfile = joinpath(@__DIR__, "config_concert_covid.toml")
 # Setup seed: the `seed` in the TOML's [Simulation] table. Same seed, same
 # events/traits/attendance every run (not the epidemic itself, see
 # gems_seed). Each setup step gets its own random stream derived from it
-# (setup_streams in 0_Helpers.jl), so changing one step doesn't reshuffle
+# (setup_streams in src/scenario.jl), so changing one step doesn't reshuffle
 # the others: e.g. changing an event's size or n_draws leaves everyone's
 # transmission_prob unchanged.
 

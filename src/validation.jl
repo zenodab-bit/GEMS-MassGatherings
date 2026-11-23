@@ -1,5 +1,5 @@
 # ===========================================================================
-# 7_Validation.jl
+# validation.jl
 #
 ## Checks on a finished run. Including this file only defines functions;
 # run_validation_checks(...) at the bottom runs them all.
@@ -262,7 +262,7 @@ end
 
 # --- Expected infections at events (the Infected row) ---
 #
-# A check of the event mechanism (4_Contacts.jl, 5_Transmission.jl) that
+# A check of the event mechanism (contacts.jl, transmission.jl) that
 # doesn't reuse its code: the simulation draws contacts and infections at
 # random; this computes, for each replicate, the probability of each
 # outcome from the rules the events are meant to follow, given who was
@@ -285,7 +285,7 @@ end
 # Expected contacts of one person, E[min(K, m)]: K drawn with the given
 # mean and std, capped at m, the number of people there are to meet.
 # Written from the distributions' definitions, independently of
-# sample_n_contacts / negbin_params (0_Helpers.jl), so a mistake there
+# sample_n_contacts / negbin_params (utils.jl), so a mistake there
 # can't hide in the check. A negative binomial with mean μ and variance
 # σ² > μ has success probability μ/σ² and r = μ²/(σ² - μ).
 function expected_capped_contacts(mean_k, std_k, m)
