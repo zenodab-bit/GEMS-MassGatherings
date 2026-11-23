@@ -9,6 +9,7 @@
 #   5. Result types & aggregation (per-event compartment counts)
 #   6. Output formatting & plotting helpers
 #   7. Running a scenario (setup_streams, run_scenario, run_comparison)
+#   8. Sweeps (with_date, with_date_range, run_sweep)
 # ===========================================================================
 
 
@@ -738,6 +739,122 @@ function run_comparison(event_config::EventConfig;
 
     comparison = compare_runs(with, without, folder)
     return (; with, without, comparison, folder)
+end
+
+
+## === 8. Sweeps ===
+
+# A copy of event_config with category `category_id`'s date_range set to
+# `date_range`; everything else unchanged. For sweeps over when events happen.
+function with_date_range(event_config::EventConfig, category_id::Integer, date_range::Tuple{Int,Int})
+    i = findfirst(c -> c.id == category_id, event_config.categories)
+    i === nothing && error("No category with id $category_id in event_config.")
+    categories = copy(event_config.categories)
+    categories[i] = Category(categories[i]; date_range)
+    return EventConfig(event_config; categories)
+end
+
+# The same, with every draw of the category on one day. Only for categories
+# with n_draws = 1: draws of one category can't share a day (use
+# with_date_range to move the window of a recurring category instead).
+function with_date(event_config::EventConfig, category_id::Integer, day::Integer)
+    i = findfirst(c -> c.id == category_id, event_config.categories)
+    i === nothing && error("No category with id $category_id in event_config.")
+    n = event_config.categories[i].n_draws
+    n <= 1 || error("Category $category_id has n_draws = $n, and its draws can't all be on day $day. " *
+                    "Use with_date_range to move its date window instead.")
+    return with_date_range(event_config, category_id, (Int(day), Int(day)))
+end
+
+# Runs the comparison with and without events (run_comparison) once per
+# value in sweep_values, to see how the events' effect depends on one
+# setting. `sweep` says what changes: sweep(value) returns the run_scenario
+# settings to use for that value, as a NamedTuple, e.g.
+#   sweep(day) = (; event_config = with_date(event_config, 1, day))
+#   sweep(m)   = (; transmission_dist = Gamma(gamma_params(m, 0.1)...))
+# Everything not returned stays as passed in (kwargs, the same as for
+# run_scenario). sweep_label names the setting in the output.
+#
+# Every value uses the same setup seed and the same GEMS seed, so values
+# differ only in the swept setting, not in luck.
+#
+# Shortcut: if sweep only ever returns event_config, the run without events
+# is the same for every value (nobody goes to any event, and the
+# population, transmission_prob and seeds don't change), so it runs once
+# and every value is compared against it. Otherwise each value gets its own.
+#
+# Results go to Results/<results_name>, by default
+# sweep_<n>sims_<date and time>: one folder per value (value_<v>/, holding
+# with_events/, its comparison files and, without the shortcut, its own
+# without_events/), the shared without_events/ (with the shortcut), and the
+# summary over all values: sweep.txt, sweep.csv, sweep.png.
+#
+# Returns (; summary, folder): the per-value summary table and the folder.
+function run_sweep(event_config::EventConfig;
+                   sweep::Function,
+                   sweep_values::AbstractVector,
+                   sweep_label::AbstractString = "value",
+                   n_simulations::Integer,
+                   gems_seed = nothing,
+                   run_validation::Bool = true,
+                   results_name = nothing,
+                   kwargs...)
+
+    isempty(sweep_values) && error("sweep_values is empty.")
+    allunique(sweep_values) || error("sweep_values has repeated values: $(sweep_values).")
+    isnothing(gems_seed) || gems_seed isa Integer ||
+        error("gems_seed must be nothing or an integer, got $(repr(gems_seed)).")
+    # picked once here, so every run uses the same one
+    gems_seed_used = isnothing(gems_seed) ? rand(RandomDevice(), 0:typemax(Int64)) : Int64(gems_seed)
+
+    overrides = [sweep(v) for v in sweep_values]
+    for (v, o) in zip(sweep_values, overrides)
+        o isa NamedTuple ||
+            error("sweep($v) returned $(typeof(o)); it must return settings like (; event_config = ...).")
+    end
+    events_only = all(o -> keys(o) == (:event_config,), overrides)
+
+    name = something(results_name,
+        "sweep_$(n_simulations)sims_$(Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS"))")
+    folder = normpath(joinpath(@__DIR__, "..", "Results", name))
+    n_runs = length(sweep_values) + (events_only ? 1 : length(sweep_values))
+    println("\n=== Sweep: $(length(sweep_values)) values of $sweep_label, $n_runs runs of " *
+            "$n_simulations replicate(s) ($(events_only ? "one run without events for all values" :
+                                              "one run without events per value")) ===")
+
+    # settings shared by every run; for each value, its own settings win
+    shared = (; kwargs..., n_simulations, gems_seed = gems_seed_used)
+    settings_for(o) = merge(shared, Base.structdiff(o, NamedTuple{(:event_config,)}))
+    config_for(o) = get(o, :event_config, event_config)
+
+    shared_without = nothing
+    if events_only
+        println("\n######## Without events (shared by every value) ########")
+        shared_without = run_scenario(config_for(overrides[1]); settings_for(overrides[1])...,
+            run_validation = false, events_on = false,
+            results_name = joinpath(name, "without_events"))
+    end
+
+    rows = []
+    for (v, o) in zip(sweep_values, overrides)
+        value_name = joinpath(name, "value_$v")
+        println("\n######## $sweep_label = $v: with events ########")
+        with = run_scenario(config_for(o); settings_for(o)..., run_validation,
+                            results_name = joinpath(value_name, "with_events"))
+        without = if events_only
+            shared_without
+        else
+            println("\n######## $sweep_label = $v: without events ########")
+            run_scenario(config_for(o); settings_for(o)..., run_validation = false, events_on = false,
+                         results_name = joinpath(value_name, "without_events"))
+        end
+        df = compare_runs(with, without, normpath(joinpath(@__DIR__, "..", "Results", value_name)))
+        push!(rows, summarise_comparison(v, df))
+    end
+
+    summary = DataFrame(identity.(rows))   # identity. gives the rows one concrete type
+    write_sweep_summary(summary, sweep_label, events_only, gems_seed_used, folder)
+    return (; summary, folder)
 end
 
 

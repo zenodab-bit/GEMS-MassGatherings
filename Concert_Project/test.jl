@@ -7,8 +7,8 @@
 # below (it replaces 1_UserConfig.jl), so a run takes seconds instead of
 # minutes. Results are NOT meant to be realistic; they go to the project's
 # Results/test_<n> folder. By default it also runs without events and
-# compares the two (compare_without_events below), so that part is tested
-# as well.
+# compares the two (compare_without_events below), and runs a small sweep
+# (test_sweep), so those parts are tested as well.
 #
 # The config uses most features (several categories and sections, both
 # section modes, core, loyalty, cross-section contacts) so
@@ -42,6 +42,9 @@ run_validation = true
 # also run without events and compare, so that part is tested too; the
 # with_events/ subfolder holds what a test run without comparison would
 compare_without_events = true
+# afterwards, also a small sweep (2 values: 3 more runs), so sweeps are
+# tested too; results in Results/test_<n>/sweep. false skips it.
+test_sweep = true
 pop_size = 5_000       # synthetic population size
 
 # GEMS settings: the main TOML, with a shorter simulation and more initial
@@ -150,6 +153,16 @@ scenario = (;
 try
     compare_without_events ? run_comparison(event_config; scenario...) :
                              run_scenario(event_config; scenario...)
+
+    # moves the concert's (category 3, two draws) 10-day date window; only
+    # the events change, so the run without events is shared
+    if test_sweep
+        run_sweep(event_config; scenario...,
+            results_name = "test_$test_number/sweep",
+            sweep_label = "concert window start",
+            sweep_values = [10, 30],
+            sweep = start -> (; event_config = with_date_range(event_config, 3, (start, start + 10))))
+    end
 finally
     rm(test_configfile; force=true)
 end
