@@ -1,22 +1,18 @@
 # ===========================================================================
 # validation.jl
 #
-## Checks on a finished run. Including this file only defines functions;
-# run_validation_checks(...) at the bottom runs them all.
+# Checks of a finished run; run_validation_checks runs them all.
 # ===========================================================================
 
-# Population-wide SEIR compartment counts as of `tick`, computed directly
-# from the infection log (not from tick_cases, which turned out to report
-# same-day incidence rather than cumulative prevalence). Used by
-# validate_epidemic_state as the population-wide baseline. Uses the same
-# compartments as analyze_event_population: absent (dead, severe or
-# hospitalised that day) first, then infectious / recovered / exposed.
+# Population-wide compartment counts on `tick`, from the infection log, with
+# the same rules as analyze_event_population (absent first). The baseline
+# for validate_epidemic_state.
 function population_compartment_counts(inf_log::DataFrame, tick::Int, pop_size::Int)
     infectious = 0
     exposed = 0
     recovered = 0
     absent = 0
-    same_day_other = 0   # infected on `tick` outside GlobalSetting, before events run
+    same_day_other = 0   # infected on `tick` outside the GlobalSetting, which runs last
 
     for row in eachrow(inf_log)
         if row.tick == tick
@@ -41,10 +37,8 @@ function population_compartment_counts(inf_log::DataFrame, tick::Int, pop_size::
         recovered=recovered, absent=absent, same_day_other=same_day_other)
 end
 
-# Prints the overall attendance distribution (events attended per person,
-# all categories together), checks that nobody is booked twice on the same
-# day, and confirms each event hit its target attendee count.
-# Core/non-core breakdowns are per category, in validate_category_attendance.
+# Events attended per person, no same-day double bookings, and every event
+# filled to its size.
 function validate_assignment(people::DataFrame, events::Vector{Event}, event_config::EventConfig, attendees::Dict{String,Vector{Int}})
     println("\n=== Assignment Validation ===")
 
@@ -67,8 +61,7 @@ function validate_assignment(people::DataFrame, events::Vector{Event}, event_con
     println("\nPeople attending at least one event: $total_assigned")
     println("People attending multiple events:    $multi_assigned")
 
-    # nobody may attend two events on the same day, except different stages
-    # of one draw of a staged category
+    # nobody attends two events on a day, except stages of one staged draw
     n_double = count(1:nrow(people)) do i
         ds = people.event_dates[i]
         allunique(ds) && return false
@@ -90,10 +83,8 @@ function validate_assignment(people::DataFrame, events::Vector{Event}, event_con
     println("Unassigned: $(nrow(people) - total_assigned) / $(nrow(people))")
 end
 
-# Per category: how many people attended 1..n_draws draws of that category
-# (core vs non-core), whether every core member attended every draw, and,
-# with several sections, how many core members went to each section.
-# Uses the real core groups returned by assign_events!, not a recomputed size.
+# Per category: people by number of draws attended (core and non-core),
+# whether every core member attended every draw, and core per section.
 function validate_category_attendance(events::Vector{Event}, event_config::EventConfig,
     attendees::Dict{String,Vector{Int}}, core_groups::Dict{Int,Vector{Int}})
     println("\n=== Per-category Attendance ===")
@@ -106,7 +97,6 @@ function validate_category_attendance(events::Vector{Event}, event_config::Event
             continue
         end
 
-        # draws of this category attended, per person
         draws_per_person = Dict{Int,Int}()
         for e in cat_events, idx in attendees[e.id]
             draws_per_person[idx] = get(draws_per_person, idx, 0) + 1
@@ -121,7 +111,6 @@ function validate_category_attendance(events::Vector{Event}, event_config::Event
             println("    $k draw(s): $(length(people_k)) people ($n_core core + $(length(people_k) - n_core) non-core)")
         end
 
-        # core guarantee: every core member attends every draw
         if isempty(core)
             println("    (no core)")
         else
@@ -131,7 +120,6 @@ function validate_category_attendance(events::Vector{Event}, event_config::Event
                     "    ✗ $n_missed core member(s) missed at least one draw")
         end
 
-        # core per section (multi-section categories only)
         if !isempty(core) && length(category.sections) > 1
             println("    Core per section:")
             for e in sort(cat_events, by=e -> (e.draw_id, e.section_id))
@@ -141,10 +129,8 @@ function validate_category_attendance(events::Vector{Event}, event_config::Event
     end
 end
 
-# A staged category's attendance, per draw and stage: attendees (all venues
-# together) against the stage's size, and the overlap reached against the
-# one set: how many of the stage's attendees were at the previous stage of
-# the same draw, wanted round(overlap × size).
+# A staged category per draw and stage: attendees against the stage's
+# size, and the overlap with the previous stage against round(overlap × size).
 function validate_stage_attendance(category::StagedCategory, cat_events, attendees)
     println("\n  $(category.name) (id=$(category.id), staged, n_draws=$(category.n_draws)):")
     for draw in sort(unique(e.draw_id for e in cat_events))
@@ -168,37 +154,39 @@ function validate_stage_attendance(category::StagedCategory, cat_events, attende
     end
 end
 
-# Checks, per event: infected_at_event never exceeds the event size, and
-# every compartment sums back to the event size (within rounding).
+# Per event: infected_at_event doesn't exceed the people assigned, and the
+# compartments add up to them (below n only for events that couldn't be
+# filled, which validate_assignment flags).
 function validate_results(aggregated::Dict, events::Vector{Event})
     println("\n=== Results Validation ===")
 
     for event in events
         metrics = aggregated[event.id]
-        println("\nEvent $(event.id) — Day $(event.date) — n=$(event.n)")
+        assigned = metrics[:assigned]
+        size_str = assigned.min == assigned.max == event.n ? "n=$(event.n)" :
+                   "n=$(event.n), assigned $(fmt(assigned.mean)) on average"
+        println("\nEvent $(event.id) — Day $(event.date) — $size_str")
 
-        # infected at event should not exceed section size
-        if metrics[:infected_at_event].max > event.n
-            println("  ✗ infected_at_event max ($(metrics[:infected_at_event].max)) exceeds section size ($(event.n))")
+        if metrics[:infected_at_event].max > assigned.max
+            println("  ✗ infected_at_event max ($(metrics[:infected_at_event].max)) exceeds the people assigned ($(assigned.max))")
         else
             println("  ✓ infected_at_event within bounds")
         end
 
-        # susceptible + infectious + exposed + recovered + absent + same-day-other should equal section size
+        # equal in every replicate, so the means match up to rounding
         total = metrics[:susceptible].mean + metrics[:infectious].mean +
                 metrics[:exposed].mean + metrics[:recovered].mean +
                 metrics[:absent].mean + metrics[:same_day_other].mean
-        if abs(total - event.n) > 1.0  # allow small rounding error
-            println("  ✗ compartment totals ($(fmt(total))) don't match section size ($(event.n))")
+        if abs(total - assigned.mean) > 1e-6  # floating-point rounding only
+            println("  ✗ compartment totals ($(fmt(total))) don't match the people assigned ($(fmt(assigned.mean)))")
         else
-            println("  ✓ compartment totals match section size")
+            println("  ✓ compartment totals match the people assigned")
         end
     end
 end
 
 
-# Compares each event's actual attendee age/sex distribution against the
-# category's (or, if unset, the population-wide) target.
+# Each event's attendee age and sex distribution against its targets.
 function validate_demographics(people::DataFrame, events::Vector{Event}, event_config::EventConfig, attendees::Dict{String,Vector{Int}})
     println("\n=== Demographic Validation ===")
 
@@ -206,15 +194,14 @@ function validate_demographics(people::DataFrame, events::Vector{Event}, event_c
         cat_events = filter(e -> e.category_id == category.id, events)
         isempty(cat_events) && continue
 
-        # a staged category's stages each have their own weights: one group per stage
+        # a staged category: one group per stage, each with its own weights
         groups = category isa StagedCategory ?
             [(stage, "\nStaged category $(category.id), stage $s ($(stage.name)):",
               filter(e -> e.stage_id == s, cat_events)) for (s, stage) in enumerate(category.stages)] :
             [(category, "\nCategory $(category.id) — loyalty=$(category.loyalty):", cat_events)]
 
         for (weights_from, header, group_events) in groups
-            # expected share per (age group, sex) cell, built the same way
-            # compute_weights builds sampling weights: age weight x sex weight
+            # expected share per (age group, sex) cell, as in compute_weights
             n_groups = length(event_config.age_boundaries) + 1
             mass = [(isempty(weights_from.age_weights) ? event_config.age_dist[g] : weights_from.age_weights[g]) *
                     (isempty(weights_from.sex_weights) ? event_config.sex_dist[g][s] : weights_from.sex_weights[s])
@@ -262,32 +249,12 @@ end
 
 # --- Expected infections at events (the Infected row) ---
 #
-# A check of the event mechanism (contacts.jl, transmission.jl) that
-# doesn't reuse its code: the simulation draws contacts and infections at
-# random; this computes, for each replicate, the probability of each
-# outcome from the rules the events are meant to follow, given who was
-# present and infectious on the event day:
-#   - an infectious attendee draws K contacts (negative binomial with the
-#     section's mean and std, Poisson when std^2 <= mean), capped at the
-#     number of others present in their section, and meets that many
-#     different people there, chosen at random;
-#   - with cross-section contacts, the same again with the category's
-#     cross-section mean and std, among those present in the draw's other
-#     sections;
-#   - each contact infects a susceptible with the infecter's own
-#     transmission_prob.
-# If the simulation doesn't follow these rules (e.g. contacts from the
-# wrong section, a wrong number of contacts, the wrong person's
-# transmission_prob), the observed infections drift away from these.
-# Inputs both share (the attendee lists, transmission_prob, the configured
-# contact numbers) aren't tested here.
+# Tests the event code without reusing it: per replicate, the expected
+# infections from the intended contact and transmission rules, given who
+# was present and infectious (see docs/validation.md).
 
-# Expected contacts of one person, E[min(K, m)]: K drawn with the given
-# mean and std, capped at m, the number of people there are to meet.
-# Written from the distributions' definitions, independently of
-# sample_n_contacts / negbin_params (utils.jl), so a mistake there
-# can't hide in the check. A negative binomial with mean μ and variance
-# σ² > μ has success probability μ/σ² and r = μ²/(σ² - μ).
+# E[min(K, m)], K with the given mean and std, written from the
+# distributions' definitions, independently of utils.jl.
 function expected_capped_contacts(mean_k, std_k, m)
     (mean_k <= 0 || m <= 0) && return 0.0
     v = std_k^2
@@ -295,11 +262,8 @@ function expected_capped_contacts(mean_k, std_k, m)
     return sum(ccdf(K, k) for k in 0:(m - 1))   # E[min(K, m)] = Σ P(K > k), k < m
 end
 
-# The state on day d of the people in `ids`, from one replicate's infection
-# log, using each person's latest infection up to day d: :absent (dead,
-# severe or hospitalised that day, see absent_on), :infectious (infected
-# before d, infectious on d and not yet recovered), or :other (infected but
-# neither). People not in the result were never infected up to day d.
+# State on day d of the people in `ids`, from their latest infection up to
+# d: :absent (see absent_on), :infectious, or :other. Never infected: not in it.
 function attendee_states(inf_log::DataFrame, d::Integer, ids::Set{Int32})
     latest = Dict{Int32,Int}()   # id => row of the latest infection up to day d
     for (i, (t, b)) in enumerate(zip(inf_log.tick, inf_log.id_b))
@@ -317,20 +281,18 @@ function attendee_states(inf_log::DataFrame, d::Integer, ids::Set{Int32})
     return states
 end
 
-# Per event and replicate: the expected number infected at the event. Per
-# replicate r, a susceptible attendee present in section s escapes infection
-# with probability
-#   Π over infectious i in s:            1 - c_i / m_s * p_i
-#   Π over infectious i in another section t of the draw (cross-section):
-#                                        1 - c'_i / m'_t * p_i
-# (c = expected capped contacts, m = how many others they can meet, p_i = i's
-# transmission_prob); expected infected = S_r * (1 - escape), S_r the
-# susceptible attendees present (from event_results). Returns event id =>
-# one expected value per replicate.
+# Expected infections per event and replicate. A susceptible present in
+# section s escapes with probability
+#   Π over infectious i in s:                         1 - c_s / m_s * p_i
+#   Π over infectious i in another section t of the draw: 1 - c'_t / m'_t * p_i
+# c_s: expected capped contacts in s; m_s: others present in s; c'_t, m'_t:
+# the same for t's cross-section contacts, among those present outside t;
+# p_i: i's transmission_prob. Expected infected = S * (1 - escape), S the
+# susceptible attendees (event_results). Returns event id => one value per
+# replicate.
 function expected_infected_at_events(events, people, setups, bd, event_results)
     expected = Dict(e.id => Float64[] for e in events)
-    # one group per draw, and for staged categories per stage of it: each
-    # stage is its own GlobalSetting pass, with contacts only within the venue
+    # one group per draw, and per stage for staged categories (own pass each)
     draws = unique((e.category_id, e.draw_id, e.stage_id) for e in events)
 
     for (r, rd) in enumerate(runs(bd))
@@ -371,26 +333,9 @@ function expected_infected_at_events(events, people, setups, bd, event_results)
     return expected
 end
 
-# Compares each event's actual compartment counts against an expected
-# value, as a Z-score.
-#
-# Susceptible to Absent: population-wide prevalence scaled to event size.
-# This assumes attendees are a random sample of the population. Core and
-# loyal repeat attendees had extra exposure at earlier draws, so in later
-# draws recovered/infectious can sit above the baseline: large Z-scores
-# there reflect real interaction, not an error. Observed is the mean over
-# replicates, so each of these rows' std (one run's spread) is divided by
-# sqrt(n_runs) to get the spread of that mean. Read them as sanity checks.
-#
-# Infected: the expected infections at the event, computed per replicate
-# from who was present and infectious (expected_infected_at_events above).
-# The Z-score uses the per-replicate differences, observed minus expected:
-# their mean over their standard error (std / √replicates). The spread
-# comes from the replicates themselves, since infections at an event are
-# far more variable than binomial (one infectious person with many contacts
-# can infect several at once); so it needs at least 2 replicates, and more
-# give a sharper test. This one is a real test of the event code: |Z| above
-# about 3 is worth a closer look.
+# Each event's compartments against expected values, as Z-scores: for
+# Susceptible to Absent, population prevalence (sanity checks); for
+# Infected, expected_infected_at_events (a real test; see docs/validation.md).
 function validate_epidemic_state(aggregated, events, bd, event_config, people, setups, event_results)
     println("\n=== Epidemic State Validation ===")
 
@@ -417,10 +362,8 @@ function validate_epidemic_state(aggregated, events, bd, event_config, people, s
         for (date, cs) in counts_per_date
     )
 
-    # z_str is "n/a" rather than a Z-score of 0 when std == 0 (e.g. with a
-    # single simulation replicate), since 0 would misleadingly look like a
-    # perfect match rather than "no variance to compare against."
-    # std is one run's spread; std / sqrt(n_runs) is the spread of the mean.
+    # "n/a" rather than 0 when std == 0 (e.g. one replicate): no variance
+    # to compare against, not a perfect match
     function print_validation_row(label, expected, observed, std)
         se = std / sqrt(n_runs)
         z_str = se > 0 ? fmt((observed - expected) / se) : "n/a"
@@ -432,16 +375,16 @@ function validate_epidemic_state(aggregated, events, bd, event_config, people, s
     for event in events
         metrics = aggregated[event.id]
         pc = pop_counts[event.date]
+        n_att = metrics[:assigned].mean   # below n if the event couldn't be filled
 
-        expected_infectious = (pc.infectious / pop_size) * event.n
-        expected_exposed = (pc.exposed / pop_size) * event.n
-        expected_recovered = (pc.recovered / pop_size) * event.n
-        expected_absent = (pc.absent / pop_size) * event.n
-        # observed susceptible also excludes same-day infections in other
-        # settings (GlobalSetting runs last), so the baseline must too
-        expected_susceptible = event.n - expected_infectious - expected_exposed -
+        expected_infectious = (pc.infectious / pop_size) * n_att
+        expected_exposed = (pc.exposed / pop_size) * n_att
+        expected_recovered = (pc.recovered / pop_size) * n_att
+        expected_absent = (pc.absent / pop_size) * n_att
+        # observed susceptible excludes same-day infections elsewhere, so this does too
+        expected_susceptible = n_att - expected_infectious - expected_exposed -
                                expected_recovered - expected_absent -
-                               (pc.same_day_other / pop_size) * event.n
+                               (pc.same_day_other / pop_size) * n_att
 
         println("\nEvent $(event.id) — Day $(event.date) — n=$(event.n)")
         println("  $(rpad("", 20)) $(rpad("Expected", 12)) $(rpad("Observed", 12)) Z-score")
@@ -452,7 +395,6 @@ function validate_epidemic_state(aggregated, events, bd, event_config, people, s
         print_validation_row("Recovered", expected_recovered, metrics[:recovered].mean, metrics[:recovered].std)
         print_validation_row("Absent", expected_absent, metrics[:absent].mean, metrics[:absent].std)
         println("  " * "-"^55)
-        # per replicate: observed minus expected; Z = their mean / standard error
         expected_r = infected_expected[event.id]
         diffs = [event_results[r][event.id].infected_at_event - expected_r[r] for r in eachindex(expected_r)]
         se = length(diffs) > 1 ? std(diffs) / sqrt(length(diffs)) : 0.0
@@ -465,8 +407,7 @@ end
 
 # === Run everything ===
 
-# Runs every check, writes the output to validation.txt in run_folder, then
-# shows it on screen too.
+# Runs every check into validation.txt, then shows it on screen.
 function run_validation_checks(; people, events, event_config, attendees,
                                  core_groups, aggregated, event_results, bd, run_folder,
                                  setups = [(; attendees, core_groups, transmission_prob = people.transmission_prob)])

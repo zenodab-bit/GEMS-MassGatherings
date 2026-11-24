@@ -22,8 +22,7 @@
     [Pathogens.Covid19]
         [Pathogens.Covid19.transmission_function]
             type = "SettingRate"
-            # must exist for GEMS, but stays empty: transmission uses each
-            # person's transmission_prob (mean and std in 1_UserConfig.jl)
+            # empty but required: transmission_prob is set in config/user_config.jl
             [Pathogens.Covid19.transmission_function.parameters]
 
         [Pathogens.Covid19.progressions]
@@ -124,7 +123,6 @@
         [Pathogens.Covid19.progression_assignment]
             type = "AgeBasedProgressionAssignment"
             [Pathogens.Covid19.progression_assignment.parameters]
-                # Updated Age Groups from Image
                 age_groups = ["-39", "40-59", "60-79", "80-"]
                 
                 # assumed that 30% of severe requires hospitalization
@@ -211,4 +209,4 @@
 [Settings.GlobalSetting]
     [Settings.GlobalSetting.contact_sampling_method]
         type = "EventContacts"
-        # no parameters: event contact rates are set per section in 1_UserConfig.jl
+        # no parameters: event contacts are set in config/user_config.jl

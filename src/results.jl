@@ -1,24 +1,21 @@
 # ===========================================================================
 # results.jl
 #
-# What a run's results are made of: per-event compartment counts and their
-# summary over replicates, attack rates, offspring dispersion, and saving
-# the run's information (run_info/) and per-event results (events.csv,
-# event_results.csv, attendance.jld2).
+# Per-event compartment counts and their summary over replicates, attack
+# rates, offspring dispersion, and saving run_info/ and the raw results.
 # ===========================================================================
 
-## === 5. Result types & aggregation ===
+## === Result types and aggregation ===
 
-# Concrete types (not Vector{Any}/Dict{Symbol,NamedTuple}) for per-event
-# compartment counts and their aggregated stats — for type stability.
-const EventCounts = @NamedTuple{susceptible::Int, infectious::Int, exposed::Int, recovered::Int, absent::Int, same_day_other::Int, infected_at_event::Int}
+# Concrete types, for type stability. assigned: the people actually
+# assigned in that replicate (below n only if the event couldn't be
+# filled); the compartments susceptible to same_day_other add up to it.
+const EventCounts = @NamedTuple{assigned::Int, susceptible::Int, infectious::Int, exposed::Int, recovered::Int, absent::Int, same_day_other::Int, infected_at_event::Int}
 const EventStat = @NamedTuple{mean::Float64, std::Float64, min::Float64, p25::Float64, median::Float64, p75::Float64, max::Float64}
 
-# Whether someone is dead, severely ill or in hospital on day t, from their
-# infection-log dates (exposure = the tick they were infected). Uses the
-# same rules as GEMS's is_dead / is_severe / is_hospitalized, which
-# absent_from_events (contacts.jl) uses during the simulation: such people
-# don't attend events that day.
+# Whether someone is dead, severely ill or in hospital on day t, from
+# their infection-log dates: the same rules as GEMS's is_dead / is_severe /
+# is_hospitalized, which absent_from_events (contacts.jl) uses.
 function absent_on(t, exposure, recovery, death, sev_onset, sev_offset, hosp_admission, hosp_discharge)
     0 <= death <= t && return true
     infected = exposure >= 0 && exposure <= t < max(recovery, death)
@@ -29,18 +26,9 @@ end
 absent_on(t, row) = absent_on(t, row.tick, row.recovery, row.death, row.severeness_onset,
     row.severeness_offset, row.hospital_admission, row.hospital_discharge)
 
-# Classifies every assigned attendee of every event into one compartment as
-# of that event's date, by scanning the infection log once per event.
-# Absent (dead, severe or hospitalised that day) comes first; the other
-# compartments only count attendees who were actually there.
-#
-# Staged categories: `passes` is the run's record of infections in later
-# GlobalSetting passes ((person id, day) => stage, from run_scenario's
-# stage_passes); event infections not in it happened in pass 1. For a venue
-# of stage s, only infections in stage s count as infected at the event;
-# people infected at an earlier stage that day count with same_day_other
-# (they're no longer susceptible when stage s comes), and people infected at
-# a later stage were still susceptible here. Normal events are pass 1.
+# Classifies every attendee as of the event day, from the infection log.
+# `passes`: (person id, day) => stage for infections in later passes. At a
+# stage-s venue, earlier stages' infections count as same_day_other.
 function analyze_event_population(inf_log::DataFrame, people::DataFrame, events::Vector{Event},
                                   attendees::Dict{String,Vector{Int}};
                                   passes::AbstractDict = Dict{Tuple{Int32,Int16},Int}())
@@ -48,10 +36,8 @@ function analyze_event_population(inf_log::DataFrame, people::DataFrame, events:
 
     for event in events
         this_pass = max(event.stage_id, 1)
-        # get individual ids for this event from people DataFrame
         section_ids = Set{Int32}(people.id[idx] for idx in attendees[event.id])
 
-        # categorize people from infection log
         infected_before_ids = Set{Int32}()
         currently_infectious_ids = Set{Int32}()
         exposed_before_ids = Set{Int32}()
@@ -81,13 +67,12 @@ function analyze_event_population(inf_log::DataFrame, people::DataFrame, events:
                     if row_pass == this_pass
                         push!(event_infected_ids, row.id_b)
                     elseif row_pass < this_pass
-                        push!(same_day_other_ids, row.id_b)   # infected at an earlier stage that day
+                        push!(same_day_other_ids, row.id_b)   # at an earlier stage that day
                     end                                       # (a later stage: still susceptible here)
                 end
             end
         end
 
-        # compute counts
         not_susceptible_ids = union(infected_before_ids, same_day_other_ids)
         susceptible = length(setdiff(section_ids, not_susceptible_ids))
         infectious = length(intersect(currently_infectious_ids, section_ids))
@@ -98,6 +83,7 @@ function analyze_event_population(inf_log::DataFrame, people::DataFrame, events:
         infected_at_event = length(intersect(event_infected_ids, section_ids))
 
         event_data::EventCounts = (
+            assigned=length(attendees[event.id]),
             susceptible=susceptible,
             infectious=infectious,
             exposed=exposed,
@@ -114,8 +100,8 @@ function analyze_event_population(inf_log::DataFrame, people::DataFrame, events:
 end
 
 
-# Aggregates per-run EventCounts into mean/std/min/median/max/quartiles per
-# event per field, across replicates. std is 0.0 with a single replicate.
+# Mean, std (0.0 for one replicate), min, quartiles and max of every field,
+# per event, across replicates.
 function aggregate_event_results(results_vector::Vector{Dict{String,EventCounts}})
     aggregated = Dict{String,Dict{Symbol,EventStat}}()
     first_result = results_vector[1]
@@ -143,10 +129,8 @@ function aggregate_event_results(results_vector::Vector{Dict{String,EventCounts}
 end
 
 
-# Per-run attack rate among susceptible attendees of one event, in %:
-# infected_at_event / susceptible. Runs with no susceptible attendees are
-# skipped (the rate is undefined there), so the result can have fewer
-# entries than event_results, or none.
+# Per run, infected_at_event / susceptible in %, for one event. Runs with no
+# susceptible attendees are skipped, so there may be fewer rates than runs.
 function susceptible_attack_rates(event_results::Vector{Dict{String,EventCounts}}, event_id::String)
     rates = Float64[]
     for r in event_results
@@ -157,22 +141,9 @@ function susceptible_attack_rates(event_results::Vector{Dict{String,EventCounts}
 end
 
 
-# Dispersion k of onward infections (offspring) for one run: lower k means
-# more superspreading. Counts how many people each infected person went on
-# to infect (0 for those who infected nobody) and fits k by method of
-# moments, k = mean^2 / (variance - mean); Inf means no overdispersion.
-#
-# People infected too close to the end are left out, since the simulation
-# ends before they finish infecting others. The cutoff is measured from this
-# run's own infection log, so it follows whatever the TOML's pathogen
-# settings are: for every infected person, the days from infection until
-# they can no longer infect anyone, i.e. the earliest of recovery, death or
-# hospital admission (hospitalised people can't infect; severe people still
-# infect their household until recovery). The cutoff is the `coverage`
-# quantile (default 95%) of those durations, rounded up to whole days.
-#
-# The count pools the whole epidemic, so it also reflects susceptibles
-# running out over time.
+# Dispersion k of onward infections (method of moments; lower k, more
+# superspreading). Leaves out people infected in the last `cutoff` days:
+# the `coverage` quantile of how long people can infect, from this run.
 function offspring_dispersion(inf_log::DataFrame, last_tick::Integer; coverage::Real=0.95)
     offspring = Dict{Int32,Int}()
     for a in inf_log.id_a
@@ -180,7 +151,7 @@ function offspring_dispersion(inf_log::DataFrame, last_tick::Integer; coverage::
         offspring[a] = get(offspring, a, 0) + 1
     end
 
-    # days each person stays able to infect (-1 in the log = never happens)
+    # days each person can infect (-1 in the log = never happens)
     windows = Int[]
     tick, rec, dth, hosp = inf_log.tick, inf_log.recovery, inf_log.death, inf_log.hospital_admission
     for i in eachindex(tick)
@@ -205,15 +176,8 @@ function offspring_dispersion(inf_log::DataFrame, last_tick::Integer; coverage::
 end
 
 
-# Saves what's needed to rerun a run into <run_folder>/run_info:
-#   - copies of `config_files` (the files the run was configured with)
-#   - run_info.toml: the `settings` passed in (seeds, replicates, population
-#     files, ...), Julia version and thread count, and the code version
-#     (git commit and branch, and whether there were uncommitted changes)
-#   - uncommitted_changes.diff: those changes, if any (new files that were
-#     never added to git are not included)
-# The population and settings files are recorded by path, not copied.
-# See README, "Rerunning a run".
+# Saves what's needed to rerun a run into run_info/: config copies,
+# run_info.toml and uncommitted changes (see docs/reproducibility.md).
 function save_run_info(run_folder, config_files::Vector{String}; settings...)
     dir = joinpath(run_folder, "run_info")
     mkpath(dir)
@@ -234,8 +198,8 @@ function save_run_info(run_folder, config_files::Vector{String}; settings...)
     info = Dict(
         "saved_at" => Dates.format(Dates.now(), "yyyy-mm-dd HH:MM:SS"),
         "run" => Dict(string(k) => (isnothing(v) ? "nothing" : v) for (k, v) in settings),
-        # interactive threads too: plain `julia` (1.12+) starts one, `julia -t N` none,
-        # and GEMS's random numbers differ between the two even with the same `threads`
+        # interactive threads matter too: plain `julia` (1.12+) starts one,
+        # `julia -t N` none, and GEMS's random numbers differ between them
         "environment" => Dict("julia_version" => string(VERSION), "threads" => Threads.nthreads(),
                               "interactive_threads" => Threads.nthreads(:interactive)),
         "code" => Dict(
@@ -248,19 +212,8 @@ function save_run_info(run_folder, config_files::Vector{String}; settings...)
     println("Saved: run_info (config copies, seeds, code version)")
 end
 
-# Saves the per-event results before they're summarised, so they can be
-# reused without rerunning:
-#   - events.csv: one row per event (id, category, draw, section, date, size,
-#     contact rates)
-#   - event_results.csv: one row per replicate and event, with every
-#     compartment count (susceptible ... infected_at_event)
-#   - attendance.jld2: who was assigned to each event ("attendees": event id
-#     => person ids) and each category's core group ("core_groups":
-#     category id => person ids). Person ids are the population's `id`.
-#     When attendance varies per replicate (several setups), both hold one
-#     such Dict per replicate instead, in replicate order.
-#   With picked histories or branching, `labels` gives each run's history
-#   (replicate number) and future, added as columns to event_results.csv.
+# Saves events.csv, event_results.csv (with history and future columns
+# from `labels`) and attendance.jld2 (person ids, per replicate if they vary).
 function save_raw_results(run_folder, events, event_results, setups, people; labels = nothing)
     events_df = DataFrame([NamedTuple{fieldnames(Event)}(getfield.(Ref(e), fieldnames(Event))) for e in events])
     # the stage column only matters with staged categories
@@ -283,5 +236,4 @@ function save_raw_results(run_folder, events, event_results, setups, people; lab
     JLD2.save(joinpath(run_folder, "attendance.jld2"), "attendees", attendees, "core_groups", core_groups)
     println("Saved: events.csv, event_results.csv, attendance.jld2")
 end
-
 

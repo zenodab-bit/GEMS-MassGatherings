@@ -1,29 +1,19 @@
 # ===========================================================================
 # scenario.jl
 #
-# Running a scenario from start to finish (run_scenario): the setup's random
-# streams, the population, the GEMS runs (as one batch, or one by one for
-# per-replicate setups, branching, picked histories and staged categories),
-# and then the analysis, saving and validation.
+# run_scenario: one scenario from start to finish. The setup's random
+# streams, the population, the GEMS runs (as one batch, or one by one), then
+# analysis, saving and validation.
 # ===========================================================================
 
-## === 7. Running a scenario ===
+## === Running a scenario ===
 
-# Where results go unless the caller says otherwise (results_dir in
-# run_scenario, run_comparison and run_sweep): the Results/ folder of the
-# project this code is in, i.e. next to src/. run.jl and test/test.jl pass
-# their own folder explicitly, so they don't depend on where src/ is.
+# Results/ next to src/, unless the caller passes results_dir (run.jl and
+# test/test.jl do).
 default_results_dir() = normpath(joinpath(@__DIR__, "..", "Results"))
 
-# The setup's random streams, all derived from the setup seed (the TOML's
-# Simulation seed). Each setup step gets its own stream, so changing one
-# step doesn't reshuffle the others: e.g. changing an event's size or
-# n_draws leaves everyone's transmission_prob unchanged.
-#   events     - event dates and sizes
-#   traits     - per-person traits (transmission_prob)
-#   assign     - who attends what
-#   population - a synthetic population (synthetic_population)
-# Created fresh on every call, so the same seed always gives the same streams.
+# One random stream per setup step, from the setup seed, so changing one
+# step doesn't reshuffle the others.
 function setup_streams(seed::Integer)
     setup_rng = Xoshiro(seed)
     return (events     = Xoshiro(rand(setup_rng, UInt64)),
@@ -32,10 +22,8 @@ function setup_streams(seed::Integer)
             population = Xoshiro(rand(setup_rng, UInt64)))
 end
 
-# The stream replicate r draws its own attendance (kind = :attendance) or
-# transmission_prob (kind = :transmission) from, when they vary per
-# replicate (vary_per_replicate in run_scenario). Derived from the setup
-# seed with draws after setup_streams' four, so those stay unchanged.
+# Replicate r's own stream for :attendance or :transmission
+# (vary_per_replicate), from draws after setup_streams' four.
 function replicate_stream(setup_seed::Integer, kind::Symbol, r::Integer)
     setup_rng = Xoshiro(setup_seed)
     draws = [rand(setup_rng, UInt64) for _ in 1:6]   # 1-4: setup_streams
@@ -44,15 +32,8 @@ function replicate_stream(setup_seed::Integer, kind::Symbol, r::Integer)
     return Xoshiro(base_seed + UInt64(r))
 end
 
-# Calls f with the prepared population in the form GEMS needs. GEMS only
-# loads a settings file when the population is given as a file path, not as
-# a table. So with a settings file, the prepared population (with the event
-# columns) is written to a temporary file and passed by path, then deleted
-# afterwards, even if f fails; reading it back first makes sure no event
-# column changed on the way. Without one, the table is passed directly,
-# which is faster (no file to write, and none to read per replicate).
-# GEMS_COLUMNS (attendance.jl) are the columns GEMS copies onto its own
-# individuals, for contacts.jl and transmission.jl to read.
+# Calls f with the population as GEMS needs it: the table, or with a
+# settings file a temporary file (GEMS reads settings only for those).
 function with_population_for_gems(f, people, settings_file)
     isnothing(settings_file) && return f(people)
     file = tempname() * ".jld2"
@@ -70,15 +51,12 @@ function with_population_for_gems(f, people, settings_file)
     end
 end
 
-# Branching: makes future f of history h continue with its own random
-# numbers from day branch_day on. GEMS keeps one random generator per
-# thread (sim.rngs); at the end of day branch_day - 1 (GEMS runs the
-# stepmod before moving to the next day) they're re-seeded in place, with
-# copy!, so anything holding on to one of them sees the new state too.
-# Future 1 isn't re-seeded: it's the history's own continuation, the same
-# as without branching. The seeds come from the GEMS seed, h, f and the
-# thread's slot k, so the same settings always give the same futures
-# (Xoshiro hashes its seed, so nearby numbers give unrelated streams).
+# Branching: future f > 1 of history h gets its own random numbers from
+# branch_day on: GEMS's per-thread generators (sim.rngs) are re-seeded at
+# the end of day branch_day - 1. In place, with copy!, so anything else
+# holding one of them sees the new state too; replacing them wouldn't do
+# that. Future 1 is the history itself. Seeds come from the GEMS seed, h, f
+# and the thread slot k, so the same settings give the same futures.
 future_seed(gems_seed, h, f, k) =
     reinterpret(UInt64, Int64(gems_seed)) ⊻ (UInt64(h) << 40) ⊻ (UInt64(f) << 20) ⊻ UInt64(k)
 
@@ -96,90 +74,53 @@ function branch!(sim, branch_day::Integer, gems_seed, h::Integer, f::Integer)
     return sim
 end
 
-# The base population table from a .jld2 file (the table under "data").
-# The population files aren't in the repository (see README, Setup), so a
-# missing one stops with a message saying what to do.
+# The population table in a .jld2 file (under "data"); population files
+# aren't in the repository, so a missing one says what to do.
 function load_population(file::AbstractString)
     isfile(file) || error("Population file not found: $file\n" *
         "The population and settings files are not part of the repository. Put them in the data/ " *
-        "folder (or set population_file and settings_file in run.jl to where they are); see README, Setup.")
+        "folder (or set population_file and settings_file in run.jl to where they are); see README, \"The population\".")
     return JLD2.load(file)["data"]
 end
 
-# A synthetic population generated by GEMS, as a table: `synthetic` holds
-# the settings of GEMS's generator (n, avg_household_size, avg_office_size,
-# avg_school_size); the random numbers come from the setup seed's own
-# stream (setup_streams), so the same seed always gives the same population.
-# GEMS calls these populations non-representative: they're for trying the
-# code out and for tests, not for realistic results.
+# A synthetic population from GEMS's generator (settings in `synthetic`),
+# from the setup seed's own stream. Not representative: for trying and tests.
 synthetic_population(synthetic, setup_seed::Integer) =
     dataframe(Population(; synthetic..., rng = setup_streams(setup_seed).population))
 
-# The run_scenario settings `kwargs` with a population file replaced by its
-# table, loaded once. Used by run_comparison and run_sweep, which call
-# run_scenario several times: without it, every run would read the file
-# again (about 10 s for Saalekreis). Same results either way, since
-# run_scenario always works on its own copy of the table.
+# The settings `kwargs` with a population file replaced by its table, so
+# comparisons and sweeps read it only once (about 10 s for Saalekreis).
 function population_loaded_once(kwargs)
     settings = values(kwargs)   # a NamedTuple
     haskey(settings, :population) && settings.population isa AbstractString || return settings
     return merge(settings, (; population = load_population(settings.population)))
 end
 
-# Runs one scenario from start to finish: samples the events, prepares the
-# population and assigns attendees, runs the GEMS batch, then analyses,
-# saves and (optionally) validates the results. run.jl and test/test.jl
-# both call this, so the steps exist only here.
+# Runs one scenario: checks the config, samples the events, prepares the
+# population and assigns attendees, runs GEMS, then analyses, saves and
+# (optionally) validates. run.jl, test.jl, comparisons and sweeps all call it.
 #
-#   event_config      - the event categories (config/user_config.jl)
-#   transmission_dist - each person's transmission_prob is drawn from it
-#   configfile        - the GEMS TOML
-#   population        - the base population: a .jld2 file holding a table
-#                       under "data", or the table itself, or nothing (the
-#                       default) for a synthetic population generated by
-#                       GEMS (see synthetic). Never changed: every call
-#                       works on its own fresh copy.
-#   synthetic         - with population = nothing, the settings of GEMS's
-#                       synthetic population generator: n (size),
-#                       avg_household_size, avg_office_size, avg_school_size;
-#                       default (; n = 100_000). It's made from the setup
-#                       seed's own stream, so the same seed gives the same
-#                       population.
-#   settings_file     - the matching GEMS settings file, or nothing (always
-#                       nothing for a synthetic population)
-#   n_simulations     - number of replicates
-#   setup_seed        - seed of the setup streams; defaults to the TOML's
-#                       Simulation seed
-#   gems_seed         - GEMS's seed: nothing for a new random one, or a number
-#   run_validation    - whether to run validation.jl's checks
-#   events_on         - false: everything is set up as usual, but no event
-#                       takes place (see daily_global_setting!, contacts.jl)
-#   vary_per_replicate - what each replicate draws for itself instead of
-#                       sharing: [] (nothing, the default), [:attendance],
-#                       [:transmission] (transmission_prob) or both. The
-#                       events themselves (dates, sizes) are always shared.
-#   histories         - which replicates to run, by number: nothing (all of
-#                       1:n_simulations) or e.g. [7], which runs replicate 7
-#                       exactly as in a run of 7 or more replicates with the
-#                       same seeds and settings
-#   branch_day, n_futures - branching: every history runs n_futures times,
-#                       identical up to day branch_day - 1 and with its own
-#                       random numbers from branch_day on (see branch!).
-#                       branch_day = nothing: no branching
-#   label             - the GEMS batch label
-#   results_dir       - the folder results go into; by default the
-#                       project's Results/ (see default_results_dir)
-#   results_name      - folder name inside results_dir; by default
-#                       run_<n>sims_<date and time>
-#   run_info_files    - files copied into run_info/ (see save_run_info)
-#   run_info          - extra settings written to run_info.toml
+#   event_config, transmission_dist, configfile - as in config/user_config.jl
+#   population        - a .jld2 file (table under "data"), a table, or
+#                       nothing for a synthetic one (settings in
+#                       `synthetic`); never changed: each call uses a copy
+#   settings_file     - the population file's GEMS settings file, or nothing
+#   setup_seed        - default: the TOML's Simulation seed
+#   gems_seed         - nothing for a random one (printed and saved)
+#   events_on         - false: set up as usual, but no event takes place
+#   vary_per_replicate - [], [:attendance], [:transmission] or both: drawn
+#                       per replicate instead of shared (event dates and
+#                       sizes are always shared)
+#   histories         - replicates to run, e.g. [7], exactly as in a full
+#                       run; nothing for 1:n_simulations
+#   branch_day, n_futures - see branch!; branch_day = nothing: no branching
+#   results_dir, results_name - default Results/run_<n>sims_<date and time>
+#   run_info_files, run_info - copied to / written in run_info/
 #
-# Returns a NamedTuple with everything the run produced: events, people,
-# attendees, core_groups (replicate 1's, when they vary), setups (one per
-# replicate when something varies, otherwise one shared by all: each with
-# attendees, core_groups and transmission_prob), bd (the GEMS BatchData),
-# event_results, aggregated, stage_passes (per run: (person id, day) =>
-# stage, for infections at later stages of staged categories), run_folder,
+# Returns a NamedTuple: events, people, attendees and core_groups
+# (replicate 1's when they vary), setups (one per replicate when something
+# varies, else one), bd (GEMS BatchData), event_results, aggregated,
+# stage_passes (per run: (person id, day) => stage), run_folder,
 # setup_seed, gems_seed_used and last_day.
 function run_scenario(event_config::EventConfig;
                       transmission_dist,
@@ -204,6 +145,8 @@ function run_scenario(event_config::EventConfig;
 
     isnothing(gems_seed) || gems_seed isa Integer ||
         error("gems_seed must be nothing or an integer, got $(repr(gems_seed)).")
+    # here too, so configs built in code (e.g. by a sweep) are checked
+    validate_config(event_config)
     streams = setup_streams(setup_seed)
 
     # --- events ---
@@ -230,7 +173,6 @@ function run_scenario(event_config::EventConfig;
     all(in((:attendance, :transmission)), vary) && allunique(vary) ||
         error("vary_per_replicate may only contain :attendance and :transmission, got $(repr(vary_per_replicate)).")
 
-    # histories (which replicates) and branching (futures per history)
     isnothing(histories) ||
         (histories isa AbstractVector && !isempty(histories) && all(h -> h isa Integer && h >= 1, histories) &&
          allunique(histories)) ||
@@ -244,15 +186,13 @@ function run_scenario(event_config::EventConfig;
     # one entry per GEMS run, in run order
     run_labels = [(history = h, future = f) for h in history_list for f in 1:n_futures]
     labelled = !isnothing(branch_day) || !isnothing(histories)
-    # staged categories need each run's record of which stage infections
-    # happened in, so their runs go one by one too
+    # staged categories need each run's pass_infections, so they run one by one too
     staged = any(c -> c isa StagedCategory, event_config.categories)
 
     transmission_func = SettingRate()
 
-    # A GEMS batch of n_runs replicates on the prepared population `pop`
-    # (a table, or the file it was written to), whose event columns are in
-    # the table `people`.
+    # A GEMS batch of n_runs replicates on `pop` (a table, or its file),
+    # whose event columns are in `people`.
     make_batch(pop, n_runs, people) = Batch(
         n_runs = n_runs,
         configfile = configfile,
@@ -261,36 +201,32 @@ function run_scenario(event_config::EventConfig;
         ind_extension = GEMS_COLUMNS,
         transmission_function = transmission_func,
         label = label,
-        # GlobalSetting holds only each day's event attendees (see contacts.jl);
-        # total event attendances, checked again inside GEMS by daily_global_setting!
+        # GlobalSetting holds only each day's attendees (contacts.jl)
         setup = let expected_attendances = sum(length, people.event_dates)
             sim -> daily_global_setting!(sim, expected_attendances; events_on)
         end
     )
 
-    # Picked here rather than by GEMS so the value is known and can be saved
-    # with the results (GEMS doesn't report a seed it chose itself).
+    # picked here, not by GEMS, so it can be saved with the results
     gems_seed_used = isnothing(gems_seed) ? rand(RandomDevice(), 0:typemax(Int64)) : Int64(gems_seed)
     Threads.nthreads() == 1 &&
         println("\nRunning on 1 thread. Starting Julia with more, e.g. `julia -t 8 ...`, makes the " *
-                "simulation about twice as fast (see README, \"Speed\").")
+                "simulation about twice as fast (see docs/reproducibility.md).")
     println("\nGEMS seed: $gems_seed_used, $(Threads.nthreads()) thread(s). " *
             "To repeat this run, set gems_seed = $gems_seed_used and use the same number of threads.")
 
     # --- population, attendance and GEMS ---
-    # prepare_population and assign_events! add columns to the table, so each
-    # call works on a fresh copy and the caller's table stays as it was
+    # every call works on a fresh copy; the caller's table stays as it was
     isnothing(population) && !isnothing(settings_file) &&
         error("A settings file belongs to a population file: with population = nothing (a synthetic " *
               "population) settings_file must be nothing too.")
     base = isnothing(population) ? synthetic_population(synthetic, setup_seed) :
            population isa AbstractString ? load_population(population) : copy(population)
 
-    # per run: (person id, day) => stage, for infections in the extra
-    # GlobalSetting passes of staged categories (see daily_global_setting!)
+    # per run: (person id, day) => stage, for infections in staged categories' extra passes
     stage_passes = Dict{Tuple{Int32,Int16},Int}[]
     if isempty(vary) && !labelled && !staged
-        # one setup, shared by every replicate: one GEMS batch
+        # one setup shared by every replicate: one GEMS batch
         people, age_groups, sex_levels = prepare_population(event_config, streams.traits, base, transmission_dist)
         attendees, core_groups = assign_events!(people, events, event_config, streams.assign)
         bd = with_population_for_gems(people, settings_file) do pop
@@ -299,18 +235,14 @@ function run_scenario(event_config::EventConfig;
         setups = [(; attendees, core_groups, transmission_prob = people.transmission_prob)]
         append!(stage_passes, [Dict{Tuple{Int32,Int16},Int}() for _ in 1:n_simulations])
     else
-        # The runs go one by one, the way GEMS's own batch runs them (the same
-        # seed for replicate h as in a normal run), collected into one
-        # BatchData. Needed when every replicate draws its own attendance
-        # and/or transmission_prob (GEMS then gets each its own population),
-        # for branching, and for picking histories. Only the slim part of each
-        # setup is kept, to save memory.
+        # one by one, with the seeds GEMS's batch would use, into one
+        # BatchData; only the slim part of each setup is kept
         sim_seeds = let rng = Xoshiro(gems_seed_used)
             [GEMS.gems_rand(rng, 0:typemax(Int64)) for _ in 1:maximum(history_list)]
         end
-        # the setup of history h: shared by all, or its own (vary_per_replicate)
+        # history h's setup: shared, or its own (vary_per_replicate)
         function make_setup(h)
-            fresh = setup_streams(setup_seed)   # streams from their start, as for replicate-shared setups
+            fresh = setup_streams(setup_seed)   # from their start, as for shared setups
             traits_rng = :transmission in vary ? replicate_stream(setup_seed, :transmission, h) : fresh.traits
             assign_rng = :attendance in vary ? replicate_stream(setup_seed, :attendance, h) : fresh.assign
             people_h, _, _ = prepare_population(event_config, traits_rng, copy(base), transmission_dist)
@@ -324,7 +256,7 @@ function run_scenario(event_config::EventConfig;
         people = nothing
         for h in history_list
             people_h, setup_h = isnothing(shared) ? make_setup(h) : shared
-            # the first history's full table is kept for saving and validation (ids are the same in all)
+            # the first history's table is kept for saving and validation (same ids in all)
             isnothing(people) && (people = people_h)
 
             with_population_for_gems(people_h, settings_file) do pop
@@ -346,7 +278,7 @@ function run_scenario(event_config::EventConfig;
         isempty(vary) && (setups = [shared[2]])   # one setup for all runs
         attendees, core_groups = setups[1].attendees, setups[1].core_groups
     end
-    # replicate r's setup (the same one for all replicates when nothing varies)
+    # replicate r's setup (the same one for all when nothing varies)
     setup_of(r) = setups[length(setups) == 1 ? 1 : r]
 
     # --- per-event results ---
@@ -358,20 +290,18 @@ function run_scenario(event_config::EventConfig;
     aggregated = aggregate_event_results(event_results)
 
     # --- saving ---
-    # always the project's Results folder, wherever Julia was started from
     name = something(results_name,
         "run_$(length(run_labels))sims_$(Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS"))")
     run_folder = normpath(joinpath(results_dir, name))
     mkpath(run_folder)
 
-    # everything needed to rerun this run (see README, "Rerunning a run")
+    # everything needed to rerun this run (docs/reproducibility.md)
     save_run_info(run_folder, run_info_files;
         n_simulations, run_validation, settings_file, events_on,
         population = isnothing(population) ? "synthetic $(synthetic)" :
                      population isa AbstractString ? population : "a table passed in",
         vary_per_replicate = string.(vary), branch_day, n_futures, histories, run_info...,
         setup_seed, gems_seed = gems_seed_used)
-    # the per-event results before they're summarised
     save_raw_results(run_folder, events, event_results, setups, people;
                      labels = labelled ? run_labels : nothing)
 
@@ -379,7 +309,7 @@ function run_scenario(event_config::EventConfig;
     run_analysis(; aggregated, event_results, events, event_config, bd, run_folder,
                  setup_seed, gems_seed_used, last_day)
 
-    # validation output goes to validation.txt, then is shown on screen too
+    # written to validation.txt, then shown on screen
     if run_validation
         run_validation_checks(; people, events, event_config, attendees,
                               core_groups, aggregated, event_results, bd, run_folder, setups)
@@ -388,5 +318,4 @@ function run_scenario(event_config::EventConfig;
     return (; events, people, attendees, core_groups, setups, bd, event_results, aggregated,
               stage_passes, run_folder, setup_seed, gems_seed_used, last_day)
 end
-
 

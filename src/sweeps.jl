@@ -1,16 +1,14 @@
 # ===========================================================================
 # sweeps.jl
 #
-# Sweeps: the comparison with and without events for a list of values of
-# one setting (run_sweep), the date helpers to build them (with_date,
-# with_date_range), and the summary over all values (sweep.txt, sweep.csv,
-# sweep.png).
+# run_sweep (the comparison with and without events for a list of values
+# of one setting), the date helpers with_date and with_date_range, and the
+# sweep summary (sweep.txt, .csv, .png).
 # ===========================================================================
 
-## === 8. Sweeps ===
+## === Sweeps ===
 
-# A copy of event_config with category `category_id`'s date_range set to
-# `date_range`; everything else unchanged. For sweeps over when events happen.
+# event_config with category `category_id`'s date_range replaced.
 function with_date_range(event_config::EventConfig, category_id::Integer, date_range::Tuple{Int,Int})
     i = findfirst(c -> c.id == category_id, event_config.categories)
     i === nothing && error("No category with id $category_id in event_config.")
@@ -20,9 +18,8 @@ function with_date_range(event_config::EventConfig, category_id::Integer, date_r
     return EventConfig(event_config; categories)
 end
 
-# The same, with every draw of the category on one day. Only for categories
-# with n_draws = 1: draws of one category can't share a day (use
-# with_date_range to move the window of a recurring category instead).
+# The same with the category on one day; only for n_draws = 1, since draws
+# of a category can't share a day.
 function with_date(event_config::EventConfig, category_id::Integer, day::Integer)
     i = findfirst(c -> c.id == category_id, event_config.categories)
     i === nothing && error("No category with id $category_id in event_config.")
@@ -32,30 +29,17 @@ function with_date(event_config::EventConfig, category_id::Integer, day::Integer
     return with_date_range(event_config, category_id, (Int(day), Int(day)))
 end
 
-# Runs the comparison with and without events (run_comparison) once per
-# value in sweep_values, to see how the events' effect depends on one
-# setting. `sweep` says what changes: sweep(value) returns the run_scenario
-# settings to use for that value, as a NamedTuple, e.g.
+# Runs run_comparison once per value in sweep_values. sweep(value) returns
+# the run_scenario settings for that value as a NamedTuple, e.g.
 #   sweep(day) = (; event_config = with_date(event_config, 1, day))
-#   sweep(m)   = (; transmission_dist = Gamma(gamma_params(m, 0.1)...))
-# Everything not returned stays as passed in (kwargs, the same as for
-# run_scenario). sweep_label names the setting in the output.
+# Anything not returned stays as in kwargs. All values use the same seeds.
 #
-# Every value uses the same setup seed and the same GEMS seed, so values
-# differ only in the swept setting, not in luck.
+# If sweep only ever returns event_config, the run without events is the
+# same for every value, so it runs once (the shortcut).
 #
-# Shortcut: if sweep only ever returns event_config, the run without events
-# is the same for every value (nobody goes to any event, and the
-# population, transmission_prob and seeds don't change), so it runs once
-# and every value is compared against it. Otherwise each value gets its own.
-#
-# Results go to Results/<results_name>, by default
-# sweep_<n>sims_<date and time>: one folder per value (value_<v>/, holding
-# with_events/, its comparison files and, without the shortcut, its own
-# without_events/), the shared without_events/ (with the shortcut), and the
-# summary over all values: sweep.txt, sweep.csv, sweep.png.
-#
-# Returns (; summary, folder): the per-value summary table and the folder.
+# Results go to Results/<results_name> (default sweep_<n>sims_<date and
+# time>): value_<v>/ per value, the shared without_events/ with the
+# shortcut, and sweep.txt, .csv, .png. Returns (; summary, folder).
 function run_sweep(event_config::EventConfig;
                    sweep::Function,
                    sweep_values::AbstractVector,
@@ -71,7 +55,7 @@ function run_sweep(event_config::EventConfig;
     allunique(sweep_values) || error("sweep_values has repeated values: $(sweep_values).")
     isnothing(gems_seed) || gems_seed isa Integer ||
         error("gems_seed must be nothing or an integer, got $(repr(gems_seed)).")
-    # picked once here, so every run uses the same one
+    # picked once, so every run uses it
     gems_seed_used = isnothing(gems_seed) ? rand(RandomDevice(), 0:typemax(Int64)) : Int64(gems_seed)
 
     kwargs = population_loaded_once(kwargs)
@@ -90,7 +74,7 @@ function run_sweep(event_config::EventConfig;
             "$n_simulations replicate(s) ($(events_only ? "one run without events for all values" :
                                               "one run without events per value")) ===")
 
-    # settings shared by every run; for each value, its own settings win
+    # shared settings; each value's own override them
     shared = (; kwargs..., n_simulations, gems_seed = gems_seed_used, results_dir)
     settings_for(o) = merge(shared, Base.structdiff(o, NamedTuple{(:event_config,)}))
     config_for(o) = get(o, :event_config, event_config)
@@ -126,9 +110,7 @@ function run_sweep(event_config::EventConfig;
 end
 
 
-# === Sweeps ===
-# Used by run_sweep (above): one comparison per value, summarised
-# into one row per value.
+# === Sweep summary ===
 
 # Mean of x and its 95% interval (mean ± 1.96 std / √n); NaN bounds for n = 1.
 function mean_interval(x)
@@ -138,7 +120,7 @@ function mean_interval(x)
     return (mean=m, lo=m - half, hi=m + half)
 end
 
-# One value's comparison table (compare_runs) as one summary row.
+# One value's comparison table as one summary row.
 function summarise_comparison(value, df)
     extra = mean_interval(df.total_with .- df.total_without)
     ratios = [(r.total_with - r.total_without) / r.infected_at_events
@@ -158,8 +140,7 @@ function summarise_comparison(value, df)
     )
 end
 
-# Saves sweep.csv (one row per value), sweep.txt (the same as a table, also
-# shown on screen) and sweep.png into folder.
+# Saves sweep.csv, sweep.txt (also shown on screen) and sweep.png.
 function write_sweep_summary(summary, sweep_label, events_only, gems_seed_used, folder)
     mkpath(folder)
     CSV.write(joinpath(folder, "sweep.csv"), summary)
@@ -200,9 +181,8 @@ function write_sweep_summary(summary, sweep_label, events_only, gems_seed_used, 
     println("Saved: sweep.txt, sweep.csv, sweep.png")
 end
 
-# Two panels against the swept value: extra infections (with the 95%
-# interval) next to the infections counted at events, and the extra
-# infections per event infection. Saved to filename.
+# Against the swept value: extra infections (with the 95% interval) and
+# infections at events, and extra infections per event infection.
 function plot_sweep(summary, sweep_label, filename)
     x = summary.value
     p1 = plot(title="Effect of the events", xlabel=sweep_label, ylabel="Infections",

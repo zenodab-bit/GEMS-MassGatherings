@@ -1,10 +1,10 @@
 # ===========================================================================
 # contacts.jl
 #
-# Extends GEMS's sample_contacts! for two ContactSamplingMethods, dispatched
-# by the "type" set in each setting's TOML config: NegBinContacts for
-# ordinary settings (household, office, etc.), EventContacts specifically
-# for GlobalSetting (mass gatherings).
+# GEMS's sample_contacts! for the two contact methods named in the TOML:
+# NegBinContacts for normal settings, EventContacts for the GlobalSetting
+# (events). Also daily_global_setting!, which puts each day's attendees in
+# the GlobalSetting and runs the extra passes for staged categories.
 # ===========================================================================
 
 import GEMS: sample_contacts!
@@ -17,8 +17,8 @@ import GEMS: sample_contacts!
     std_contacts::Float64
 end
 
-# Draws n contacts (via sample_n_contacts) from present_individuals,
-# excluding ego, using distinct offsets so no contact repeats and none is ego.
+# n distinct contacts (n from sample_n_contacts) among the others present:
+# distinct offsets from ego, so no repeats and never ego itself.
 function GEMS.sample_contacts!(
     indivs::Vector{Individual},
     csm::NegBinContacts,
@@ -35,7 +35,6 @@ function GEMS.sample_contacts!(
     n_contacts = min(sample_n_contacts(rng, csm.mean_contacts, csm.std_contacts), length(present_individuals) - 1)
     n_contacts <= 0 && return indivs
 
-    # distinct offsets => distinct contacts, and offset never lands on ego (offset ∈ 1:length-1, mod length)
     offsets = sample(rng, 1:(length(present_individuals)-1), n_contacts, replace=false)
 
     resize!(indivs, n_contacts)
@@ -50,15 +49,9 @@ end
 
 # === Event Contact Sampling ===
 
-# rosters is rebuilt once per tick and pass (see below), shared across every
-# call of that pass rather than rescanning the whole population per call.
-#
-# pass: which GlobalSetting pass of the day is running. Pass 1 is GEMS's own
-# (normal events, and the first stage of staged ones); pass s is stage s of
-# staged categories, run by daily_global_setting! at the end of the day.
-# pass_infections records, for passes after the first, who was infected in
-# which pass: (person id, day) => pass. Infections at events not in it
-# happened in pass 1.
+# rosters: attendees present by (category, draw, stage, section), built
+# once per day and pass. pass: the running pass (stage s in pass s, normal
+# events in 1). pass_infections: (person id, day) => pass, for passes > 1.
 @with_kw mutable struct EventContacts <: GEMS.ContactSamplingMethod
     cached_tick::Int16 = Int16(-1)
     cached_pass::Int = 0
@@ -68,28 +61,21 @@ end
     pass_infections::Dict{Tuple{Int32,Int16},Int} = Dict{Tuple{Int32,Int16},Int}()
 end
 
-# The GlobalSetting pass an attendance belongs to: stage s of a staged
-# category in pass s, normal events (stage 0) in pass 1.
+# The pass an attendance belongs to: stage s in pass s, normal events in 1.
 event_pass(stage_id) = max(Int(stage_id), 1)
 
-# The position of x's attendance on day `tick` in pass `pass`, or nothing.
+# Position of x's attendance on day `tick` in pass `pass`, or nothing.
 event_entry(x::Individual, tick::Int16, pass::Int) =
     findfirst(k -> x.event_dates[k] == tick && event_pass(x.stage_ids[k]) == pass, eachindex(x.event_dates))
 
-# Attendance is fixed before the simulation, but on the day itself people
-# who are dead, severely ill or in hospital don't go: they're left out of
-# that day's rosters, so they neither infect nor take up contact slots.
-# (GEMS already stops them infecting outside the household, but would still
-# let others draw them as contacts.) People with milder symptoms still go.
-# Uses GEMS's state as of `tick`, computed from each person's disease dates.
+# Dead, severely ill or hospitalised people don't go to their events that
+# day: they neither infect nor take up contact slots (GEMS alone would
+# still let others draw them as contacts). Milder cases still go.
 absent_from_events(x::Individual, tick::Int16) =
     GEMS.is_dead(x, tick) || GEMS.is_severe(x, tick) || GEMS.is_hospitalized(x, tick)
 
-# Finds ego's event (if any) for this tick and pass, then draws contacts from
-# others in the same (category, draw, stage, section); for a staged
-# category the section is the venue. Builds/caches a roster of every
-# attendee keyed that way the first time this tick and pass are seen, so
-# repeated calls reuse it instead of rescanning present_individuals each time.
+# Contacts of ego at its event this day and pass: within its section (or
+# venue) at its own rate, plus cross-section contacts within the draw.
 function GEMS.sample_contacts!(
     indivs::Vector{Individual},
     event_contacts::EventContacts,
@@ -136,14 +122,12 @@ function GEMS.sample_contacts!(
     section_roster = get(event_contacts.rosters, section_key, nothing)
     same_section_others = section_roster === nothing ? Individual[] : filter(x -> x !== ego, section_roster)
 
-    # within-section contacts, using this attendee's own section rate
     n_within = min(sample_n_contacts(rng, ego.mean_event_contacts[idx], ego.std_event_contacts[idx]), length(same_section_others))
     if n_within > 0
         append!(indivs, sample(rng, same_section_others, n_within, replace=false))
     end
 
-    # cross-section contacts, using the category's cross-section rate (0 by
-    # default keeps sections fully isolated, matching prior behavior)
+    # cross-section contacts at the category's rate (0 keeps sections apart)
     if ego.cross_section_mean_contacts[idx] > 0
         draw_roster = get(event_contacts.draw_rosters, draw_key, nothing)
         if draw_roster !== nothing
@@ -162,49 +146,24 @@ end
 
 # === GlobalSetting membership per day ===
 
-# GEMS puts the whole population in the GlobalSetting, but on any given day
-# only that day's event attendees do anything there (everyone else gets no
-# event contacts and transmission 0). So the GlobalSetting is given only
-# that day's attendees, and nobody on days without events: same results,
-# much less work per day.
+# The GlobalSetting gets only each day's attendees: same results, much less
+# work. Run once per simulation as the Batch's `setup`: builds a list per
+# (day, pass) and a stepmod that swaps in the next day's list at the end of
+# each day. The lists keep population order, which is what makes the
+# results identical to having everyone in the GlobalSetting. Errors if the
+# event columns didn't reach GEMS intact. events_on = false keeps it empty
+# (the run without events).
 #
-# Passed to Batch as `setup`, so it runs once per simulation, before day 0.
-# It builds one list per event day (all events and sections of that day
-# together; EventContacts splits them by category, draw and section), then
-# installs a stepmod that GEMS runs at the end of every day to put the next
-# day's list in place. Lists keep population order, so the same seed gives
-# the same results as with the whole population in the GlobalSetting.
-#
-# expected_attendances is the total number of event attendances in the
-# population table (sum of length(event_dates)). If GEMS's individuals hold
-# a different total, the event columns didn't reach GEMS intact; that would
-# otherwise fail silently (no event contacts at all), so it stops with an error.
-#
-# events_on = false leaves the GlobalSetting empty on every day, so no event
-# takes place, while everything else (events, attendees, transmission_prob)
-# stays as set up. That's the run without events that run_comparison
-# (comparison.jl) compares against. Before the first event day the
-# GlobalSetting is empty either way, so with the same seeds both runs are
-# identical up to that day.
-#
-# Staged categories: each stage gets its own pass through the GlobalSetting.
-# GEMS's own pass of the day holds pass 1 (normal events and the first
-# stage); at the end of the day (GEMS runs the stepmod before moving to the
-# next day, so it's still the same day), each further stage s is put in the
-# GlobalSetting and GEMS's spread_infection! runs it once more. Who gets
-# infected in those passes is recorded in the EventContacts' pass_infections.
-# The order of passes doesn't matter for who can infect whom (people infected
-# today only become infectious days later); someone infected in an earlier
-# pass just can't be infected again. GEMS never switches the GlobalSetting
-# off (deactivate! is a no-op for it), so the extra passes don't affect the
-# next day. Without staged categories there's only pass 1, as before.
+# Stage s > 1 of a staged category runs as an extra pass in the stepmod,
+# with its infections recorded in pass_infections. Pass order doesn't
+# matter: people infected today only become infectious later. GEMS's
+# deactivate! does nothing for the GlobalSetting, so the extra passes
+# can't switch it off for the next day.
 function daily_global_setting!(sim, expected_attendances::Integer; events_on::Bool = true)
     gs = settings(sim, GlobalSetting)[1]
     csm = gs.contact_sampling_method
 
-    # (day, pass) => that day's attendees in that pass; people without events
-    # never enter a list
-    by_day = Dict{Tuple{Int16,Int},Vector{Individual}}()
+    by_day = Dict{Tuple{Int16,Int},Vector{Individual}}()   # (day, pass) => attendees
     for ind in gs.individuals
         for (d, s) in zip(ind.event_dates, ind.stage_ids)
             push!(get!(() -> Individual[], by_day, (Int16(d), event_pass(s))), ind)

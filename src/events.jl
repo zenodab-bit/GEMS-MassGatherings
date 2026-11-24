@@ -1,21 +1,16 @@
 # ===========================================================================
 # events.jl
 #
-# Turns an EventConfig into concrete events: dates and sizes for every draw
-# of every category (sample_events), and for staged categories every venue
-# of every stage (sample_staged_events).
+# Turns an EventConfig into concrete events: a date and size for every draw
+# of every category, and for staged categories every venue of every stage.
 # ===========================================================================
 
 ## === Sample Events ===
 
-# Turns an EventConfig into concrete Event objects: for each Category,
-# draws n_draws distinct dates within its date_range, and for each date
-# creates one Event per EventSection (sections of one draw share that date).
-# Draws are numbered by date: draw 1 is the earliest.
-#
-# Date uniqueness is tracked per category, not globally, so two different
-# categories can coincidentally land on the same date;
-# the same-day conflict check in assign_events! handles it.
+# For each Category: n_draws distinct dates within date_range, and one Event
+# per section on each. Draws are numbered by date (draw 1 is the earliest).
+# Dates are distinct per category only; categories sharing a date are
+# handled by assign_events!.
 function sample_events(event_config::EventConfig, rng)
     events = Vector{Event}()
 
@@ -24,10 +19,10 @@ function sample_events(event_config::EventConfig, rng)
             append!(events, sample_staged_events(category, rng))
             continue
         end
-        used_dates = Set{Int}()  # track dates used by this category
+        used_dates = Set{Int}()
 
-        # sample every draw first (same RNG order as before: date, then each
-        # section's size), then number draws by date so draw 1 is the earliest
+        # random numbers per draw: the date, then each section's size;
+        # then the draws are numbered by date
         draws = Tuple{Int,Vector{Int}}[]   # (date, size per section)
         for _ in 1:category.n_draws
             available_dates = setdiff(category.date_range[1]:category.date_range[2], used_dates)
@@ -48,7 +43,7 @@ function sample_events(event_config::EventConfig, rng)
             for (section, n) in zip(category.sections, sizes)
                 id = "$(category.id)_$(draw)_$(section.id)"
 
-                # Build a readable name from whatever parts apply; falls back to id.
+                # readable name from the parts that apply; the id if none do
                 parts = String[]
                 if !isempty(category.name)
                     push!(parts, category.name)
@@ -85,12 +80,9 @@ function sample_events(event_config::EventConfig, rng)
     return events
 end
 
-# The same for a StagedCategory: n_draws distinct dates within its
-# date_range, each draw with one Event per venue of every stage, all on the
-# draw's date. Per draw, the random numbers are taken in this order: the
-# date, then each venue's size, stage by stage. Event ids are
-# "$(category)_$(draw)_$(stage)_$(venue)"; section_id holds the venue's
-# number within its stage, stage_id the stage's.
+# The same for a StagedCategory: one Event per venue of every stage, all on
+# the draw's date. Random numbers per draw: the date, then each venue's
+# size, stage by stage. section_id is the venue's number, stage_id the stage's.
 function sample_staged_events(category::StagedCategory, rng)
     used_dates = Set{Int}()
     draws = Tuple{Int,Vector{Vector{Int}}}[]   # (date, size per venue, per stage)
@@ -131,5 +123,4 @@ function sample_staged_events(category::StagedCategory, rng)
     end
     return events
 end
-
 

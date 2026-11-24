@@ -1,19 +1,16 @@
 # ===========================================================================
 # attendance.jl
 #
-# Prepares the population (its event columns and transmission_prob) and
-# assigns people to the events: core, loyalty and random fill for
-# categories, overlap and fill stage by stage for staged categories
-# (assign_events!, fill_staged_draw!).
+# Prepares the population (event columns, transmission_prob) and assigns
+# people to events: core, loyalty and random fill for categories, overlap
+# and fill stage by stage for staged categories.
 # ===========================================================================
 
 ## === Prepare Population ===
 
-# The per-person event columns, defined once here: prepare_population
-# creates them (empty), assign_events! fills them, and GEMS copies them onto
-# its own individuals (ind_extension in run_scenario, scenario.jl, via
-# GEMS_COLUMNS) for contacts.jl and transmission.jl to read.
-# Each entry: column name => element type of the per-person list.
+# The per-person event columns (name => element type): created empty by
+# prepare_population, filled by assign_events!, copied by GEMS onto its
+# individuals for contacts.jl and transmission.jl.
 const EVENT_COLUMN_TYPES = [
     :category_ids => Int32,
     :draw_ids => Int32,
@@ -26,24 +23,11 @@ const EVENT_COLUMN_TYPES = [
     :stage_ids => Int32,   # stage of a staged category; 0 for a normal one
 ]
 
-# Every column GEMS needs on its individuals: the event columns above plus
-# each person's transmission_prob.
+# All columns GEMS needs on its individuals (ind_extension in run_scenario).
 const GEMS_COLUMNS = [first.(EVENT_COLUMN_TYPES); :transmission_prob]
 
-# Takes the base population table (chosen in run.jl, or the
-# synthetic one in test.jl) and adds every column the rest of the project
-# needs: age-group labels, empty per-person event-attendance records, and
-# each person's transmission_prob. The table is changed in place.
-#
-# `people` needs at least id, age and sex (1 or 2) columns, plus the GEMS
-# setting ids (household, and optionally office, schoolclass, municipality).
-#
-# transmission_prob is drawn from `transmission_dist` (set in
-# config/user_config.jl) and kept within [0, 1], since it's used as a probability.
-#
-# The attendance columns added here are listed once, in EVENT_COLUMN_TYPES
-# above; GEMS_COLUMNS is what run_scenario (scenario.jl) passes to GEMS as
-# ind_extension.
+# Adds to `people` (in place) age groups, the empty event columns and each
+# person's transmission_prob.
 function prepare_population(event_config::EventConfig, rng, people::DataFrame, transmission_dist)
 
     age_boundaries = event_config.age_boundaries
@@ -53,12 +37,11 @@ function prepare_population(event_config::EventConfig, rng, people::DataFrame, t
     people.age_group = age_group_label.(people.age, Ref(age_boundaries))
     people.age_group = categorical(people.age_group; ordered=true, levels=age_groups)
 
-    # one empty list per person for each event column (see EVENT_COLUMN_TYPES)
     for (col, T) in EVENT_COLUMN_TYPES
         people[!, col] = [T[] for _ in 1:nrow(people)]
     end
 
-    # clamped, since e.g. a Gamma can go above 1 and a Normal below 0
+    # clamped: e.g. a Gamma can exceed 1, a Normal go below 0
     people.transmission_prob = Float64[clamp(rand(rng, transmission_dist), 0.0, 1.0) for _ in 1:nrow(people)]
 
     return people, age_groups, sex_levels
@@ -67,18 +50,8 @@ end
 
 ## === Compute Weights ===
 
-# Computes per-candidate sampling weights for demographic-targeted event
-# selection, used by assign_events! for both core-group and random-pool draws.
-#
-# Weights are per-capita: each candidate's weight is the target share
-# (age_weight times sex_weight) divided by how many candidates share their
-# (age_group, sex) cell. This keeps a cell's total pull equal to its
-# intended target share regardless of how many candidates happen to fall
-# into it — without dividing, a larger candidate pool would pull more than
-# its intended share just by having more people in it.
-#
-# Cells with zero candidates get weight 0; if their target share is
-# nonzero, sampling redistributes it proportionally across the other cells.
+# Per candidate: the target share of their (age group, sex) cell divided by
+# the cell's candidates, so each cell pulls its target share.
 function compute_weights(people, candidates, category, event_config)
     age_boundaries = event_config.age_boundaries
     n_groups = length(age_boundaries) + 1
@@ -101,7 +74,7 @@ function compute_weights(people, candidates, category, event_config)
         g = gidx[k]
         sex = sexes[idx]
 
-        # category age_weights/sex_weights override EventConfig.age_dist/sex_dist if given
+        # the category's (or stage's) weights override age_dist / sex_dist
         aw = isempty(category.age_weights) ?
              event_config.age_dist[g] :
              category.age_weights[g]
@@ -120,8 +93,8 @@ end
 
 ## === Assign Events ===
 
-# Splits k items across slots in proportion to `sizes`, using largest
-# remainders so the counts always add up to exactly k.
+# Splits k across slots in proportion to `sizes` (largest remainders, so
+# the counts add up to exactly k).
 function proportional_counts(k::Integer, sizes::AbstractVector{<:Real})
     counts = zeros(Int, length(sizes))
     (k <= 0 || isempty(sizes)) && return counts
@@ -139,17 +112,18 @@ function proportional_counts(k::Integer, sizes::AbstractVector{<:Real})
     return counts
 end
 
-# Demographically-weighted draw of up to k people from pool, without
-# replacement. Returns an empty vector, without touching rng, when there's
-# nothing to draw.
+# Weighted draw of up to k people from pool, without replacement. People
+# with weight 0 are never drawn, so it can return fewer than k (callers
+# warn about unfilled places). Doesn't touch rng when there's nothing to draw.
 function weighted_draw(rng, people, pool, k, category, event_config)
-    k = min(k, length(pool))
-    k <= 0 && return Int[]
+    (k <= 0 || isempty(pool)) && return Int[]
     weights = compute_weights(people, pool, category, event_config)
+    k = min(k, count(>(0), weights))
+    k <= 0 && return Int[]
     return sample(rng, pool, Weights(weights), k, replace=false)
 end
 
-# Hands out `members` to the events in `evs`, in consecutive blocks of
+# Hands `members` out to the events in `evs` in consecutive blocks of
 # `counts`, appending to dest[event.id].
 function split_into!(dest::Dict{String,Vector{Int}}, evs, members, counts)
     pos = 0
@@ -160,30 +134,12 @@ function split_into!(dest::Dict{String,Vector{Int}}, evs, members, counts)
     return dest
 end
 
-# Assigns people to every event, mutating `people`'s attendance columns and
-# returning attendees::Dict{String,Vector{Int}} (event id to attendee
-# row-indices) and core_groups::Dict{Int,Vector{Int}} (category id to core member row-indices)
-#
-# Events don't need to be pre-sorted: dates are processed in calendar order
-# internally, which loyalty tracking depends on.
-#
-# Phase 1 builds each category's core group once (a person can be core for
-# at most one category). Phase 2 goes date by date and fills all events of a
-# date together, in three rounds: every event's core, then every event's
-# loyalty spots, then every event's random fill. On a shared date, priority
-# goes by strength of claim (core > loyalty > random), not by category id.
-# A person still attends at most one event per day.
-#
-# With several sections, section_mode decides where core and loyal members
-# go: :event spreads them over sections at every draw, in proportion to
-# size; :section gives core a fixed home section and sends loyal attendees
-# back to their last section.
-#
-# Staged categories are filled after all other categories of a date, stage
-# by stage (fill_staged_draw! below). Within a staged draw, a person can
-# attend several stages (that's what the overlap is for), but still at most
-# one venue per stage and no other event that day.
-
+# Assigns people to every event; returns attendees (event id => rows) and
+# core_groups (category id => rows). Phase 1 picks each core group once.
+# Phase 2 goes date by date in calendar order (the loyal pools depend on
+# it), in three rounds over all of a date's events: cores, loyalty, random
+# fill. So on a shared date the stronger claim wins, whatever the category
+# id. Staged categories come last. Nobody attends two events on a day.
 function assign_events!(people::DataFrame, events::Vector{Event}, event_config::EventConfig, rng)
     loyal_pools = Dict{Int,Set{Int}}()
     core_groups = Dict{Int,Vector{Int}}()
@@ -195,15 +151,14 @@ function assign_events!(people::DataFrame, events::Vector{Event}, event_config::
     home_section = Dict{Int,Int}()              # core member => section_id (:section mode only)
     last_section = Dict{Int,Dict{Int,Int}}()    # category_id => (person => section last attended)
 
-    # --- PHASE 1: build each category's core group once ---
+    # --- PHASE 1: each category's core group ---
     for category in event_config.categories
         category isa StagedCategory && continue   # no core in staged categories
         cat_events = filter(e -> e.category_id == category.id, events)
         isempty(cat_events) && continue
 
-        # core is a fraction of the whole draw (all sections together).
-        # :event uses the smallest draw; :section uses each section's smallest
-        # size, so every home section's share always fits.
+        # core is a share of the smallest draw (:event), or of each
+        # section's smallest size (:section), so it always fits
         section_ids = [s.id for s in category.sections]
         min_section_n = [minimum(e.n for e in cat_events if e.section_id == sid) for sid in section_ids]
         if category.section_mode == :section
@@ -223,20 +178,20 @@ function assign_events!(people::DataFrame, events::Vector{Event}, event_config::
 
         core_groups[category.id] = Int[]
 
-        # demographically weighted, excluding anyone already core elsewhere
         if n_core_total > 0
             remaining_for_core = filter(idx -> idx ∉ all_core_members, base_candidates)
-            core_weights = compute_weights(people, remaining_for_core, category, event_config)
-            n_to_sample = min(n_core_total, length(remaining_for_core))
             append!(core_groups[category.id],
-                sample(rng, remaining_for_core, Weights(core_weights), n_to_sample, replace=false))
+                weighted_draw(rng, people, remaining_for_core, n_core_total, category, event_config))
+            length(core_groups[category.id]) < n_core_total &&
+                @warn "Category $(category.name): core group of $n_core_total wanted, but only " *
+                      "$(length(core_groups[category.id])) eligible people (with a weight above 0, " *
+                      "not core elsewhere)."
         end
 
         union!(all_core_members, core_groups[category.id])
 
-        # :section mode: fixed home section per core member, in proportion to
-        # each section's smallest size. Each section's share is then at most
-        # its smallest size, so a home section can never be overfilled.
+        # :section mode: a fixed home section per core member, in proportion
+        # to each section's smallest size, so no home section overfills
         if category.section_mode == :section && length(category.sections) > 1
             members = shuffle(rng, core_groups[category.id])
             counts = proportional_counts(length(members), min_section_n)
@@ -250,9 +205,9 @@ function assign_events!(people::DataFrame, events::Vector{Event}, event_config::
         end
     end
 
-    # --- PHASE 2: fill events date by date, in three rounds per date ---
+    # --- PHASE 2: date by date, three rounds per date ---
     for date in sort!(unique(e.date for e in events))
-        # normal categories' events (staged ones are filled after them, below)
+        # normal categories' events (staged ones after them, below)
         day_events = sort(filter(e -> e.date == date && e.stage_id == 0, events),
             by=e -> (e.category_id, e.draw_id, e.section_id))
         # one draw per category per date: (category, its section events)
@@ -295,7 +250,7 @@ function assign_events!(people::DataFrame, events::Vector{Event}, event_config::
 
             if category.section_mode == :section && length(secs) > 1
                 last_sec = get!(() -> Dict{Int,Int}(), last_section, category.id)
-                # first: back to the section they last attended
+                # first back to their last section
                 taken = Set{Int}()
                 for (k, e) in enumerate(secs)
                     own = [idx for idx in eligible if get(last_sec, idx, 0) == e.section_id]
@@ -303,7 +258,7 @@ function assign_events!(people::DataFrame, events::Vector{Event}, event_config::
                     append!(loyalty_selected[e.id], picked)
                     union!(taken, picked)
                 end
-                # then: open spots go to loyal people whose own section was full
+                # then open spots to those whose own section was full
                 rest = [idx for idx in eligible if idx ∉ taken]
                 for (k, e) in enumerate(secs)
                     gap = quotas[k] - length(loyalty_selected[e.id])
@@ -313,7 +268,7 @@ function assign_events!(people::DataFrame, events::Vector{Event}, event_config::
                     filter!(idx -> idx ∉ picked_set, rest)
                 end
             else
-                # one draw for the whole event, shuffled, then split by quota
+                # one draw for the whole event, shuffled, split by quota
                 picked = weighted_draw(rng, people, eligible, sum(quotas), category, event_config)
                 if length(secs) > 1
                     picked = shuffle(rng, picked)
@@ -327,7 +282,7 @@ function assign_events!(people::DataFrame, events::Vector{Event}, event_config::
             end
         end
 
-        # Round 3: random fill for whatever is left
+        # Round 3: random fill
         for e in day_events
             category = categories_by_id[e.category_id]
             pool = filter(idx -> idx ∉ booked_today, base_candidates_by_category[e.category_id])
@@ -340,7 +295,7 @@ function assign_events!(people::DataFrame, events::Vector{Event}, event_config::
                       "not enough eligible people left that day."
         end
 
-        # Record attendance; loyalty/random attendees become loyalty-eligible
+        # record attendance; loyalty and random attendees join the loyal pool
         for e in day_events
             pool = get!(() -> Set{Int}(), loyal_pools, e.category_id)
             last_sec = get!(() -> Dict{Int,Int}(), last_section, e.category_id)
@@ -363,7 +318,7 @@ function assign_events!(people::DataFrame, events::Vector{Event}, event_config::
             end
         end
 
-        # Staged categories, after every other category of the day
+        # staged categories, after every other category of the day
         staged_today = sort(filter(e -> e.date == date && e.stage_id > 0, events),
             by=e -> (e.category_id, e.stage_id, e.section_id))
         for cid in unique(e.category_id for e in staged_today)
@@ -374,18 +329,9 @@ function assign_events!(people::DataFrame, events::Vector{Event}, event_config::
     return attendees, core_groups
 end
 
-# Fills one draw of a StagedCategory (its venue events on one date), stage
-# by stage, and records the attendance:
-#   1. overlap: round(overlap × the stage's size) people drawn from the
-#      previous stage's attendees of this draw (none for the first stage);
-#   2. the rest: people at no earlier stage of this draw and at no other
-#      event that day (booked_today), within the stage's age limits;
-#   3. the stage's attendees are shuffled and spread over its venues in
-#      proportion to their sizes.
-# Draws follow the stage's demographic weights, like those of categories.
-# Afterwards everyone in the draw is added to booked_today, so no later
-# event that day can take them. Warns when the overlap or a venue can't be
-# filled.
+# Fills one staged draw, stage by stage: the overlap from the previous
+# stage, the rest from people not yet booked that day; then spread over the
+# venues by size. Warns about places it can't fill.
 function fill_staged_draw!(attendees, people, category::StagedCategory, draw_events,
                            booked_today::Set{Int}, event_config, rng)
     in_draw = Set{Int}()      # attendees of this draw's stages so far
@@ -430,5 +376,4 @@ function fill_staged_draw!(attendees, people, category::StagedCategory, draw_eve
     union!(booked_today, in_draw)
     return attendees
 end
-
 

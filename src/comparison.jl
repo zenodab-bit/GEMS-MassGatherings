@@ -1,26 +1,17 @@
 # ===========================================================================
 # comparison.jl
 #
-# The comparison of a scenario with and without its events: run_comparison
-# runs both, compare_runs pairs their replicates and writes comparison.txt,
-# comparison.csv and comparison.png.
+# A scenario with and without its events: run_comparison runs both,
+# compare_runs pairs their replicates and writes comparison.txt, .csv, .png.
 # ===========================================================================
 
-# Runs a scenario twice, with and without its events, and compares the two
-# (compare_runs, below). Both runs get the same setup seed (same
-# events, attendees and transmission_prob) and the same GEMS seed, so
-# replicate 1 of one run pairs with replicate 1 of the other, and so on:
-# each pair is identical up to the first event day, so what differs after
-# it comes from the events.
-#
-# Takes the same arguments as run_scenario. Results go to
-# Results/<results_name>, by default compare_<n>sims_<date and time>, with
-# one subfolder per run (with_events/, without_events/) and the comparison
-# files next to them. Validation (if switched on) runs on the run with
-# events only: its checks assume the events took place.
-#
-# Returns (; with, without, comparison, folder): the two run_scenario
-# results, the per-pair comparison table, and the folder.
+# Runs a scenario with and without its events, with the same setup and GEMS
+# seeds, so replicate r of one pairs with replicate r of the other: each
+# pair is identical up to the first event day. Takes run_scenario's
+# arguments. Results go to Results/<results_name> (default
+# compare_<n>sims_<date and time>): with_events/, without_events/ and the
+# comparison files. Validation runs on the run with events only.
+# Returns (; with, without, comparison, folder).
 function run_comparison(event_config::EventConfig;
                         n_simulations::Integer,
                         gems_seed = nothing,
@@ -31,7 +22,7 @@ function run_comparison(event_config::EventConfig;
 
     isnothing(gems_seed) || gems_seed isa Integer ||
         error("gems_seed must be nothing or an integer, got $(repr(gems_seed)).")
-    # picked once here, so both runs use the same one
+    # picked once, so both runs use it
     gems_seed_used = isnothing(gems_seed) ? rand(RandomDevice(), 0:typemax(Int64)) : Int64(gems_seed)
 
     name = something(results_name,
@@ -55,13 +46,9 @@ end
 
 
 # === Comparison with and without events ===
-# Used by run_comparison (above). Replicate r of the run with events
-# is paired with replicate r of the run without: same seeds, so the pair is
-# identical up to the first event day and every difference after it comes
-# from the events.
 
-# Daily new infections on days 0 to last_day. Initial (seed) infections are
-# left out: they're the same in both runs.
+# Daily new infections on days 0 to last_day, without the seed infections
+# (the same in both runs).
 function daily_infections(inf_log::DataFrame, last_day::Integer)
     daily = zeros(Int, last_day + 1)
     for (t, s) in zip(inf_log.tick, inf_log.setting_type)
@@ -71,18 +58,17 @@ function daily_infections(inf_log::DataFrame, last_day::Integer)
     return daily
 end
 
-# The infections before day d, sorted, so two runs can be compared directly.
+# The infections before day d, sorted, to compare two runs directly.
 infections_before(inf_log::DataFrame, d::Integer) =
     sort!([(t, a, b, s) for (t, a, b, s) in zip(inf_log.tick, inf_log.id_a, inf_log.id_b, inf_log.setting_type) if t < d])
 
-# Compares the two runs pair by pair. Saves comparison.csv (one row per
-# pair), comparison.txt (the summary, also shown on screen) and
-# comparison.png into folder, and returns the per-pair table.
+# Compares the runs pair by pair; saves comparison.csv (one row per pair),
+# comparison.txt (also shown on screen) and comparison.png into folder, and
+# returns the per-pair table.
 function compare_runs(with, without, folder)
     events, last_day = with.events, with.last_day
     first_day = isempty(events) ? nothing : minimum(e.date for e in events)
-    # per replicate, everyone assigned to at least one event in the run with
-    # events (one shared set unless attendance varies per replicate)
+    # per replicate (or one set for all), everyone assigned to an event
     attendee_sets = [Set{Int32}(with.people.id[i] for idxs in values(s.attendees) for i in idxs)
                      for s in with.setups]
     attendee_ids(r) = attendee_sets[length(attendee_sets) == 1 ? 1 : r]
@@ -122,10 +108,9 @@ function compare_runs(with, without, folder)
     return df
 end
 
-# The summary table: per metric, the mean of each run and the paired
-# difference (with minus without) across pairs. The 95% interval is for the
-# mean difference (mean ± 1.96 std / √pairs): if it includes 0, the pairs
-# can't tell the difference apart from chance, and more replicates help.
+# Per metric: each run's mean and the paired difference (with minus
+# without), with a 95% interval for the mean difference (mean ± 1.96 std /
+# √pairs). An interval including 0 can't tell the runs apart from chance.
 function write_comparison_summary(df, with, first_day, filename)
     n = nrow(df)
     n_identical = count(df.identical_before_first_event)
@@ -166,7 +151,7 @@ function write_comparison_summary(df, with, first_day, filename)
         row(io, "Peak day", df.peak_day_with, df.peak_day_without)
 
         println(io, "\nInfected at events (direct count, run with events only): $(fmt(mean(df.infected_at_events))) on average")
-        # per pair: extra infections overall per infection counted at the events
+        # per pair: extra infections overall per infection at the events
         ratios = [(r.total_with - r.total_without) / r.infected_at_events
                   for r in eachrow(df) if r.infected_at_events > 0]
         if isempty(ratios)
@@ -185,9 +170,8 @@ function write_comparison_summary(df, with, first_day, filename)
     println("Saved: comparison.txt, comparison.csv")
 end
 
-# Two panels: mean daily new infections with and without events, and the
-# cumulative extra infections (with minus without; mean, with the range
-# over pairs as a ribbon). Event days are marked. Saved to filename.
+# Mean daily new infections with and without events, and the cumulative
+# extra infections (mean, range over pairs as a ribbon), event days marked.
 function plot_comparison(daily_with, daily_without, events, filename)
     days = 0:(length(daily_with[1]) - 1)
     mat_w, mat_o = hcat(daily_with...), hcat(daily_without...)

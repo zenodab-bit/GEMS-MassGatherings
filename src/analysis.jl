@@ -1,21 +1,16 @@
 # ===========================================================================
 # analysis.jl
 #
-# Text metrics and plots for a finished run. Including this file only
-# defines functions; run_analysis(...) runs them all. The comparison with
-# and without events (comparison.jl) and sweeps (sweeps.jl) have their own
-# files.
-#
-# fmt, print_table_header, print_metric_row, add_event_vlines!,
-# PLOT_COLORS and PLOT_PALETTE are defined in utils.jl;
-# susceptible_attack_rates and offspring_dispersion in results.jl.
+# Text metrics and plots for a finished run; run_analysis runs them all.
+# Helpers (fmt, table rows, event lines, colours) are in utils.jl,
+# attack rates and offspring dispersion in results.jl.
 # ===========================================================================
 
 
 # === Text metrics ===
 
-# Writes per-event compartment metrics and global epidemic stats to
-# multievent_analysis.txt in run_folder.
+# Writes global epidemic metrics and per-event compartment metrics to
+# multievent_analysis.txt.
 function print_metrics(aggregated, event_results, events, bd, run_folder, setup_seed, gems_seed_used, last_day)
     filename = "$run_folder/multievent_analysis.txt"
 
@@ -28,13 +23,12 @@ function print_metrics(aggregated, event_results, events, bd, run_folder, setup_
                     "set gems_seed to this value in the config you ran with and use the same thread count to repeat this run)")
 
         # --- Global epidemic metrics ---
-        # GEMS.-qualified, so a variable of the same name elsewhere (e.g. r0) can't hide them
+        # GEMS.-qualified, so a variable of the same name can't hide them
         println(io, "\n--- Global Epidemic Metrics ---")
         println(io, "Total infections: $(fmt(GEMS.total_infections(bd)["mean"]))")
         println(io, "Attack rate:      $(fmt(GEMS.attack_rate(bd)["mean"]))")
         println(io, "R0:               $(fmt(GEMS.r0(bd)["mean"]))")
 
-        # dispersion of onward infections, one value per run
         disp = [offspring_dispersion(infections(rd), last_day) for rd in runs(bd)]
         ks = [d.k for d in disp if !isnan(d.k)]
         k_str = isempty(ks) ? "n/a (too few infections)" :
@@ -56,6 +50,7 @@ function print_metrics(aggregated, event_results, events, bd, run_folder, setup_
 
             print_table_header(io)
             metrics = aggregated[event.id]
+            print_metric_row(io, "Assigned", metrics[:assigned])   # n, unless it couldn't be filled
             print_metric_row(io, "Susceptible", metrics[:susceptible])
             print_metric_row(io, "Infectious", metrics[:infectious])
             print_metric_row(io, "Exposed", metrics[:exposed])
@@ -64,10 +59,10 @@ function print_metrics(aggregated, event_results, events, bd, run_folder, setup_
             print_metric_row(io, "Same day other", metrics[:same_day_other])
             print_metric_row(io, "Infected at event", metrics[:infected_at_event])
 
-            # per run, among attendees who were actually there (assigned
-            # minus absent); runs where nobody was there are skipped
-            shares = [100 * r[event.id].infected_at_event / (event.n - r[event.id].absent)
-                      for r in event_results if event.n > r[event.id].absent]
+            # per run, among those present (assigned minus absent); runs
+            # with nobody present are skipped
+            shares = [100 * r[event.id].infected_at_event / (r[event.id].assigned - r[event.id].absent)
+                      for r in event_results if r[event.id].assigned > r[event.id].absent]
             share_str = isempty(shares) ? "n/a (no attendees present)" : "$(fmt(mean(shares)))%"
             println(io, "\nShare of present attendees infected:    $share_str")
 
@@ -84,16 +79,15 @@ function print_metrics(aggregated, event_results, events, bd, run_folder, setup_
 end
 
 
-# Staged categories only: appends to multievent_analysis.txt, per staged
-# category and draw, the infections at each stage (all its venues together)
-# next to the stage's attendees present, as means over replicates, and the
-# same over all draws. Without staged categories nothing is written.
+# Staged categories only: appends to multievent_analysis.txt the attendees
+# present and infected per stage (all venues together), per draw and over
+# all draws, as means over replicates.
 function write_stage_summary(event_results, events, event_config, run_folder)
     staged = [c for c in event_config.categories if c isa StagedCategory]
     isempty(staged) && return
     n_runs = length(event_results)
     stage_mean(evs, field) = mean(sum(getfield(r[e.id], field) for e in evs; init=0) for r in event_results)
-    present_mean(evs) = mean(sum(e.n - r[e.id].absent for e in evs; init=0) for r in event_results)
+    present_mean(evs) = mean(sum(r[e.id].assigned - r[e.id].absent for e in evs; init=0) for r in event_results)
 
     open(joinpath(run_folder, "multievent_analysis.txt"), "a") do io
         println(io, "\n\n##############################")
@@ -128,8 +122,7 @@ end
 
 # === Plots ===
 
-# Three-panel plot (tick cases, cumulative cases, effective R) with event
-# dates marked, saved to epidemic_overview.png.
+# Daily cases, cumulative cases and effective R, event days marked.
 function plot_epidemic_overview(bd, events, run_folder)
     p1 = gemsplot(bd, type=:TickCases)
     add_event_vlines!(p1, events)
@@ -147,9 +140,8 @@ function plot_epidemic_overview(bd, events, run_folder)
 end
 
 
-# Daily case counts by setting type (mean with min/max ribbon across
-# replicates), saved to cases_by_setting.png. Excludes the 'Initial'
-# setting_type ('?') — a single-point seeding spike at tick 0, not a trend.
+# Daily cases per setting type (mean, min/max ribbon over replicates),
+# without the seed infections ('?'). Only the types listed below.
 function plot_cases_by_setting(bd, events, run_folder)
     setting_colors = Dict(
         'h' => PLOT_COLORS.blue,
@@ -168,8 +160,7 @@ function plot_cases_by_setting(bd, events, run_folder)
 
     all_setting_cases = Dict{Char,Vector{Vector{Float64}}}()
 
-    # same length for every replicate, so they can be stacked even when one
-    # run's last infection comes earlier than another's
+    # one length for all replicates, so they can be stacked
     n_ticks = maximum(maximum(infections(rd).tick) for rd in runs(bd))
     for rd in runs(bd)
         inf_log = infections(rd)
@@ -210,9 +201,7 @@ function plot_cases_by_setting(bd, events, run_folder)
 end
 
 
-# One SEIR-compartment bar chart per event, saved as seir_<event.name>.png.
-# Filenames use event.name, not the guaranteed-unique event.id — category
-# and section names need to stay distinct for this not to collide.
+# One compartment bar chart per event, seir_<event name>.png.
 function plot_event_seir(aggregated, events, run_folder)
     fields = [:susceptible, :infectious, :exposed, :recovered, :absent]   # absent: dead, severe or hospitalised
     colors = [PLOT_COLORS.skyblue, PLOT_COLORS.vermillion, PLOT_COLORS.orange,
@@ -235,14 +224,9 @@ function plot_event_seir(aggregated, events, run_folder)
 end
 
 
-# Boxplot of infected-at-event across replicates, one box per event, saved
-# to infected_boxplot.png. Falls back to a plain bar chart with a single
-# value per event when there's only one replicate (n_simulations == 1),
-# since a boxplot needs a distribution to be meaningful.
-# Boxes are coloured by category (one legend entry per category); each box
-# is labelled with its event id on the x axis.
+# Infected at each event across replicates: boxplots (bars with one
+# replicate), coloured by category.
 function plot_infected_boxplot(event_results, events, event_config, run_folder)
-    # one palette colour per category, in config order
     cat_color = Dict(c.id => PLOT_PALETTE[mod1(i, length(PLOT_PALETTE))]
                      for (i, c) in enumerate(event_config.categories))
     cat_name = Dict(c.id => (isempty(c.name) ? "category $(c.id)" : c.name)
@@ -267,15 +251,12 @@ function plot_infected_boxplot(event_results, events, event_config, run_folder)
     println("Saved: infected_boxplot")
 end
 
-# Like the old sitting/standing boxplot: one panel per (category, section),
-# one box per draw at its date. rate=true plots the attack rate among
-# susceptible attendees (per run, as in multievent_analysis.txt) instead of
-# counts, since n and the number of susceptibles differ between draws; runs
-# with no susceptible attendees are skipped. Saved to infected_by_section.png.
+# One panel per (category, section) or (stage, venue), one box per draw at
+# its date: the attack rate among susceptible attendees (rate=true), or
+# counts. Runs with no susceptible attendees are skipped.
 function plot_infected_by_section(event_results, events, event_config, run_folder; rate=true)
     isempty(events) && return
     panels = []
-    # one panel per (category, section), or for a staged category per (stage, venue)
     for (cat_id, stage_id, sec_id) in unique((e.category_id, e.stage_id, e.section_id) for e in events)
         category = event_config.categories[findfirst(c -> c.id == cat_id, event_config.categories)]
         cat_label = isempty(category.name) ? "category $cat_id" : category.name
@@ -307,7 +288,7 @@ function plot_infected_by_section(event_results, events, event_config, run_folde
             continue
         end
 
-        # boxplot needs >1 replicate to mean anything; single run falls back to points
+        # one replicate: points instead of boxes
         plotfn = length(event_results) > 1 ? boxplot : scatter
         push!(panels, plotfn(days, vals, title=title, xlabel="Event day",
             ylabel=rate ? "Infected (% of susceptible attendees)" : "Infected",
@@ -321,12 +302,10 @@ end
 
 # === Run everything ===
 
-# Writes the text metrics and every plot for a finished run into run_folder.
+# Writes the text metrics and every plot into run_folder.
 function run_analysis(; aggregated, event_results, events, event_config, bd,
                         run_folder, setup_seed, gems_seed_used, last_day)
-    # colour-blind-friendly palette for every plot that doesn't set its own
-    # colours, including GEMS's (see PLOT_COLORS in utils.jl)
-    default(palette = PLOT_PALETTE)
+    default(palette = PLOT_PALETTE)   # colour-blind-friendly, GEMS's plots too
 
     print_metrics(aggregated, event_results, events, bd, run_folder, setup_seed, gems_seed_used, last_day)
     write_stage_summary(event_results, events, event_config, run_folder)
