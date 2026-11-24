@@ -285,4 +285,3 @@ function save_raw_results(run_folder, events, event_results, setups, people; lab
 end
 
 
-println("End results")

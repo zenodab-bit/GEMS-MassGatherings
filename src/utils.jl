@@ -133,4 +133,3 @@ function add_event_vlines!(p, events)
     end
 end
 
-println("End utils")

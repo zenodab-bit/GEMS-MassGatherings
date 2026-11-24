@@ -244,4 +244,3 @@ function daily_global_setting!(sim, expected_attendances::Integer; events_on::Bo
     return sim
 end
 
-println("End Contacts")

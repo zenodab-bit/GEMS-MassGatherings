@@ -432,4 +432,3 @@ function fill_staged_draw!(attendees, people, category::StagedCategory, draw_eve
 end
 
 
-println("End attendance")

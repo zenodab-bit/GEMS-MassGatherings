@@ -10,7 +10,7 @@
 
 # Turns an EventConfig into concrete Event objects: for each Category,
 # draws n_draws distinct dates within its date_range, and for each date
-# creates one Event per Section (sections of one draw share that date).
+# creates one Event per EventSection (sections of one draw share that date).
 # Draws are numbered by date: draw 1 is the earliest.
 #
 # Date uniqueness is tracked per category, not globally, so two different
@@ -133,4 +133,3 @@ function sample_staged_events(category::StagedCategory, rng)
 end
 
 
-println("End events")

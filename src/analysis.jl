@@ -339,4 +339,3 @@ function run_analysis(; aggregated, event_results, events, event_config, bd,
     println("\nAnalysis complete. Results saved to $run_folder")
 end
 
-println("End analysis")

@@ -37,4 +37,3 @@ function GEMS.transmission_probability(
 end
 
 
-println("End Transmission")

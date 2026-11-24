@@ -25,6 +25,7 @@ function run_comparison(event_config::EventConfig;
                         n_simulations::Integer,
                         gems_seed = nothing,
                         run_validation::Bool = true,
+                        results_dir::AbstractString = default_results_dir(),
                         results_name = nothing,
                         kwargs...)
 
@@ -35,16 +36,16 @@ function run_comparison(event_config::EventConfig;
 
     name = something(results_name,
         "compare_$(n_simulations)sims_$(Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS"))")
-    folder = normpath(joinpath(@__DIR__, "..", "Results", name))
+    folder = normpath(joinpath(results_dir, name))
 
     kwargs = population_loaded_once(kwargs)
 
     println("\n######## Run 1 of 2: with events ########")
-    with = run_scenario(event_config; kwargs..., n_simulations, gems_seed = gems_seed_used,
+    with = run_scenario(event_config; kwargs..., n_simulations, gems_seed = gems_seed_used, results_dir,
                         run_validation, results_name = joinpath(name, "with_events"))
 
     println("\n######## Run 2 of 2: without events ########")
-    without = run_scenario(event_config; kwargs..., n_simulations, gems_seed = gems_seed_used,
+    without = run_scenario(event_config; kwargs..., n_simulations, gems_seed = gems_seed_used, results_dir,
                            run_validation = false, events_on = false,
                            results_name = joinpath(name, "without_events"))
 
@@ -212,4 +213,3 @@ function plot_comparison(daily_with, daily_without, events, filename)
     println("Saved: comparison.png")
 end
 
-println("End comparison")

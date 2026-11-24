@@ -2,7 +2,7 @@
 # config.jl
 #
 # The event configuration: the structs a user builds in config/user_config.jl
-# (Section, Category, Venue, Stage, StagedCategory, EventConfig), the Event
+# (EventSection, Category, Venue, Stage, StagedCategory, EventConfig), the Event
 # struct the code creates from them, and the checks of a configuration
 # (validate_config).
 # ===========================================================================
@@ -11,7 +11,7 @@
 
 # One sub-group within a draw of a Category (e.g. "seated" vs "standing").
 # Sections of the same draw share one date but have independent attendees.
-@with_kw struct Section
+@with_kw struct EventSection
     id::Int
     name::String = ""
     n_range::Tuple{Int,Int}      # event size drawn uniformly from this range
@@ -30,7 +30,7 @@ abstract type AbstractCategory end
     id::Int                                     # unique across all categories
     name::String = ""                           # should be unique across categories (used in filenames)
     date_range::Tuple{Int,Int}                  # (first_day, last_day) draws may land on
-    sections::Vector{Section}
+    sections::Vector{EventSection}
     n_draws::Int                                # also the max times one person can attend this category
     min_age::Int = 0                            # eligibility filter
     max_age::Int = 999
@@ -92,7 +92,7 @@ end
     sex_dist::Vector{Vector{Float64}}        # population-wide target sex distribution per age group
 end
 
-# One concrete gathering, on one date: a Section of a draw of a Category,
+# One concrete gathering, on one date: an EventSection of a draw of a Category,
 # or a Venue of a stage of a draw of a StagedCategory.
 # Produced by sample_events() (events.jl) — not user-constructed.
 @with_kw struct Event
@@ -212,4 +212,3 @@ function validate_stages(category::StagedCategory, n_groups::Integer)
 end
 
 
-println("End config")

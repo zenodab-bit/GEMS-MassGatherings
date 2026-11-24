@@ -63,6 +63,7 @@ function run_sweep(event_config::EventConfig;
                    n_simulations::Integer,
                    gems_seed = nothing,
                    run_validation::Bool = true,
+                   results_dir::AbstractString = default_results_dir(),
                    results_name = nothing,
                    kwargs...)
 
@@ -83,14 +84,14 @@ function run_sweep(event_config::EventConfig;
 
     name = something(results_name,
         "sweep_$(n_simulations)sims_$(Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS"))")
-    folder = normpath(joinpath(@__DIR__, "..", "Results", name))
+    folder = normpath(joinpath(results_dir, name))
     n_runs = length(sweep_values) + (events_only ? 1 : length(sweep_values))
     println("\n=== Sweep: $(length(sweep_values)) values of $sweep_label, $n_runs runs of " *
             "$n_simulations replicate(s) ($(events_only ? "one run without events for all values" :
                                               "one run without events per value")) ===")
 
     # settings shared by every run; for each value, its own settings win
-    shared = (; kwargs..., n_simulations, gems_seed = gems_seed_used)
+    shared = (; kwargs..., n_simulations, gems_seed = gems_seed_used, results_dir)
     settings_for(o) = merge(shared, Base.structdiff(o, NamedTuple{(:event_config,)}))
     config_for(o) = get(o, :event_config, event_config)
 
@@ -115,7 +116,7 @@ function run_sweep(event_config::EventConfig;
             run_scenario(config_for(o); settings_for(o)..., run_validation = false, events_on = false,
                          results_name = joinpath(value_name, "without_events"))
         end
-        df = compare_runs(with, without, normpath(joinpath(@__DIR__, "..", "Results", value_name)))
+        df = compare_runs(with, without, normpath(joinpath(results_dir, value_name)))
         push!(rows, summarise_comparison(v, df))
     end
 
@@ -224,4 +225,3 @@ function plot_sweep(summary, sweep_label, filename)
     savefig(p, filename)
 end
 
-println("End sweeps")

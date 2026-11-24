@@ -488,4 +488,3 @@ function run_validation_checks(; people, events, event_config, attendees,
     println("Saved: validation")
 end
 
-println("End Validation")

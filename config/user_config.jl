@@ -6,7 +6,7 @@
 # files you should need to touch to run a simulation with different
 # settings — everything else is internal machinery.
 #
-# See Section/Category/EventConfig field comments in src/config.jl for what
+# See EventSection/Category/EventConfig field comments in src/config.jl for what
 # each parameter below means and its constraints.
 # ===========================================================================
 
@@ -43,8 +43,8 @@ category_1 = Category(
     name = "festival",
     date_range = (40, 60),
     sections = [
-        Section(id=1, name="seated", n_range=(300,500), mean_contacts=4.0, std_contacts=6.0),
-        Section(id=2, name="standing", n_range=(800,1000), mean_contacts=12.0, std_contacts=18.0)
+        EventSection(id=1, name="seated", n_range=(300,500), mean_contacts=4.0, std_contacts=6.0),
+        EventSection(id=2, name="standing", n_range=(800,1000), mean_contacts=12.0, std_contacts=18.0)
     ],
     n_draws = 1,
     min_age = 18,
@@ -64,7 +64,7 @@ category_2 = Category(
     name = "sport",
     date_range = (10, 40),
     sections = [
-        Section(id=1, name="", n_range=(300,400), mean_contacts=8.0, std_contacts=12.0)
+        EventSection(id=1, name="", n_range=(300,400), mean_contacts=8.0, std_contacts=12.0)
     ],
     n_draws = 0,
     min_age = 16,

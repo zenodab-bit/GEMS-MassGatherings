@@ -17,11 +17,12 @@ Event contacts are extra contacts: GEMS calculates each person's contacts in the
    julia setup.jl
    ```
    This installs the exact package versions recorded in `Manifest.toml`, GEMS included. Do not run `Pkg.update()`: it moves GEMS and the other packages to their newest versions, which may not work with this code.
-4. Run a simulation, from the `GEMS-MassGatherings` folder:
+4. Get the population files. They are **not part of the repository**: the default population is Saalekreis (`people_Saalekreis.jld2` and `settings_Saalekreis.jld2`), which you get from whoever runs the project, and put in the `data/` folder. Another population works too: set `population_file` and `settings_file` in `run.jl` to its files (GEMS can download whole German states, e.g. Sachsen-Anhalt).
+5. Run a simulation, from the `GEMS-MassGatherings` folder:
    ```
    julia -t 8 run.jl
    ```
-   `-t 8` starts Julia with 8 threads, which makes the simulation about twice as fast; see [Speed](#speed). Results are saved in the project's `Results/` folder, wherever Julia was started from.
+   `-t 8` starts Julia with 8 threads, which makes the simulation about twice as fast; see [Speed](#speed). Results are saved in the `Results/` folder next to `run.jl`, wherever Julia was started from.
 
 ## Running a simulation
 
@@ -35,7 +36,7 @@ Event contacts are extra contacts: GEMS calculates each person's contacts in the
    - `sweep_values`, `sweep_label`, `sweep`: run that comparison for a list of values of one setting. See [Sweeps](#sweeps).
    - `population_file`: the base population, Saalekreis by default. Any `.jld2` file holding a table under `"data"` works, with at least `id`, `age`, `sex` (1 or 2) and the GEMS setting ids (`household`, and optionally `office`, `schoolclass`, `municipality`), like the GEMS population files.
    - `settings_file`: the matching GEMS settings file, or `nothing` if the population has none. It adds e.g. household coordinates, region codes and the larger groupings (schools, workplaces). GEMS only reads a settings file when the population is given as a file, so with a settings file `run.jl` writes the prepared population (with the event columns) to a temporary file, checks that the event columns read back unchanged, passes that file to GEMS and deletes it after the runs. This makes runs noticeably slower (each replicate reads the file back, and the extra settings are simulated too). With `nothing`, the population is passed to GEMS directly, which is faster but leaves out the coordinates, region codes and larger groupings.
-3. Run `run.jl`, as in step 4 of the setup.
+3. Run `run.jl`, as in step 5 of the setup.
 
 ### Quick test
 

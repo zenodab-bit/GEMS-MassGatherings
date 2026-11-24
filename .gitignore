@@ -1,3 +1,7 @@
 GEMS-main/
 Results/
 .vscode/
+# population and settings files: not shipped with the code (see README, Setup)
+data/*.jld2
+# personal run scripts, e.g. my_run_saalekreis.jl: never shipped
+my_*.jl
