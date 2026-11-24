@@ -1,311 +1,111 @@
 # GEMS-MassGatherings
 
-An extension of the [GEMS](https://github.com/IMMIDD/GEMS) epidemic simulator that adds mass gathering events (festivals, concerts, sport) on top of the normal GEMS settings.
-
-Event contacts are extra contacts: GEMS calculates each person's contacts in the normal settings (household, office, school, etc.) without considering their participation in events, and the event contacts are added on top. Events run through GEMS's global setting. GEMS puts the entire population in it, but the code narrows it down each day to only that day's event attendees (nobody on days without events), so its cost depends on event sizes rather than population size. It has not been tested on populations larger than Saalekreis.
+Mass gathering events (festivals, concerts, sport, and staged events such as restaurants that feed a football match) on top of the [GEMS](https://github.com/IMMIDD/GEMS) epidemic simulator. You describe the events; the code draws who attends them, simulates the epidemic with GEMS, and reports how many people were infected at each event and what the events changed.
 
 ## Setup (once per machine)
 
-1. Install Julia 1.12 (the project was built with 1.12.5): https://julialang.org/downloads
-2. Download the code and enter the folder (or download the ZIP from the GitHub page, after selecting the `multi-event-fixes` branch):
+1. Install Julia 1.12 or newer: https://julialang.org/downloads
+2. Get the code and enter its folder:
    ```
    git clone -b multi-event-fixes https://github.com/zenodab-bit/GEMS-MassGatherings.git
    cd GEMS-MassGatherings
    ```
-3. Install the packages:
+3. Install the packages, with the exact versions recorded in `Manifest.toml` (GEMS included):
    ```
    julia setup.jl
    ```
-   This installs the exact package versions recorded in `Manifest.toml`, GEMS included. Do not run `Pkg.update()`: it moves GEMS and the other packages to their newest versions, which may not work with this code.
-4. Get the population files. They are **not part of the repository**: the default population is Saalekreis (`people_Saalekreis.jld2` and `settings_Saalekreis.jld2`), which you get from whoever runs the project, and put in the `data/` folder. Another population works too: set `population_file` and `settings_file` in `run.jl` to its files (GEMS can download whole German states, e.g. Sachsen-Anhalt).
-5. Run a simulation, from the `GEMS-MassGatherings` folder:
-   ```
-   julia -t 8 run.jl
-   ```
-   `-t 8` starts Julia with 8 threads, which makes the simulation about twice as fast; see [Speed](#speed). Results are saved in the `Results/` folder next to `run.jl`, wherever Julia was started from.
+   Don't run `Pkg.update()`: it moves the packages to their newest versions, which may not work with this code.
 
 ## Running a simulation
 
-1. Configure the simulation in `config/user_config.jl` (see [Configuring events](#configuring-events) below).
-2. If needed, change the settings in `run.jl`:
-   - `n_simulations`: how many replicates to run.
-   - `run_validation`: whether to run the checks in `src/validation.jl`.
-   - `vary_per_replicate`: what each replicate draws for itself instead of sharing one draw: `[]` (nothing, the default), `[:attendance]`, `[:transmission]` or `[:attendance, :transmission]`. See [Varying the setup per replicate](#varying-the-setup-per-replicate).
-   - `branch_day`, `n_futures`, `histories`: run each replicate several times with the same history up to a chosen day and different futures after it, or rerun chosen replicates of an earlier run. See [Branching](#branching).
-   - `compare_without_events`: `true` runs the scenario twice, with and without its events, and compares them. See [Comparing with and without events](#comparing-with-and-without-events).
-   - `sweep_values`, `sweep_label`, `sweep`: run that comparison for a list of values of one setting. See [Sweeps](#sweeps).
-   - `population_file`: the base population, Saalekreis by default. Any `.jld2` file holding a table under `"data"` works, with at least `id`, `age`, `sex` (1 or 2) and the GEMS setting ids (`household`, and optionally `office`, `schoolclass`, `municipality`), like the GEMS population files.
-   - `settings_file`: the matching GEMS settings file, or `nothing` if the population has none. It adds e.g. household coordinates, region codes and the larger groupings (schools, workplaces). GEMS only reads a settings file when the population is given as a file, so with a settings file `run.jl` writes the prepared population (with the event columns) to a temporary file, checks that the event columns read back unchanged, passes that file to GEMS and deletes it after the runs. This makes runs noticeably slower (each replicate reads the file back, and the extra settings are simulated too). With `nothing`, the population is passed to GEMS directly, which is faster but leaves out the coordinates, region codes and larger groupings.
-3. Run `run.jl`, as in step 5 of the setup.
+From the project folder:
 
-### Quick test
-
-After changing the code, run `test/test.jl` to check that everything still works end to end:
 ```
-julia -t 8 test/test.jl
-```
-It calls the same `run_scenario` as `run.jl`, but on a synthetic population of 5,000 people generated by GEMS, with a 60-day simulation and its own small event config written inside the file (it replaces `config/user_config.jl`). That config uses most features (several categories and sections, both section modes, core, loyalty, cross-section contacts, a staged category with several venues and an overlap), so a change that breaks one of them shows up. The results are not meant to be realistic and are saved in `Results/test_<n>`. Its `gems_seed` is fixed, so two test runs of the same code, with the same number of threads, give identical result files: a quick way to check that a change didn't alter the results. It also runs the comparison without events (`compare_without_events = true` in `test/test.jl`), so `Results/test_<n>` has a `with_events/` and a `without_events/` folder plus the comparison files, and a small sweep over two date windows of the staged football category, with every replicate drawing its own attendance and transmission (`test_sweep = true`), in `Results/test_<n>/sweep/`. The sweep adds three short runs; set `test_sweep = false` to skip it.
-
-### Varying the setup per replicate
-
-By default, all replicates of a run share one setup: the same events, the same `transmission_prob` for everyone, and the same attendees at every event. The replicates then differ only in the epidemic itself (who is infected first, who meets whom, who infects whom), so their spread shows how much the epidemic varies *given that one draw* of attendees and transmission probabilities. If that draw happens to be unusual, every replicate inherits it, and more replicates don't change that.
-
-`vary_per_replicate` in `run.jl` lets each replicate draw parts of the setup for itself, with the same rules:
-
-| `vary_per_replicate` | Each replicate draws its own | Its spread then also shows |
-|---|---|---|
-| `[]` (default) | nothing | (only the epidemic's own randomness) |
-| `[:attendance]` | who attends which event (core, loyalty, random fill, demographics as configured) | how much it matters *who* goes |
-| `[:transmission]` | everyone's `transmission_prob` | how much it matters how infectious the individuals happen to be |
-| `[:attendance, :transmission]` | both | both |
-
-The events themselves (dates and sizes) are always shared, so sweeps over e.g. the event day keep the date you set. Each replicate's draw comes from its own random stream, derived from the setup seed and the replicate's number, so the same seeds give the same draws every time, and what doesn't vary is drawn exactly as without the option (e.g. with `[:attendance]`, everyone's `transmission_prob` is the same as with `[]`). GEMS's own seed per replicate doesn't change either. Comparisons and sweeps work the same way: replicate 1 with events pairs with replicate 1 without, which uses the same draws.
-
-What changes in the output: `attendance.jld2` holds one attendee list (and core groups) per replicate, in replicate order, and `validation.txt` checks the assignment, attendance and demographics of replicate 1's setup (every replicate's is drawn with the same rules) and uses all setups for the expected infections. Since GEMS's batch can't give each replicate its own population, the replicates are run one by one, the same way GEMS's batch runs them; it costs a few extra seconds per replicate for preparing the population and assigning attendees.
-
-### Branching
-
-Branching runs the same simulation several times, identical up to a day you choose and different after it. Each replicate is then a **history**, and each of its runs a **future**:
-
-```julia
-branch_day = 44   # the futures differ from this day on (nothing: no branching)
-n_futures = 20    # futures per history
+julia -t 8 run.jl
 ```
 
-Every history runs `n_futures` times. Up to day `branch_day - 1` all its futures are identical; at the end of that day, GEMS's random number generators are re-seeded, so from `branch_day` on each future goes its own way. Future 1 is not re-seeded: it is the history's own continuation, exactly as without branching. The new seeds are derived from `gems_seed`, the history and the future, so the same settings always give the same futures. A run makes `n_simulations × n_futures` GEMS runs; each future reruns the days before `branch_day`, which avoids copying a simulation in memory.
+`-t 8` starts Julia with 8 threads, which makes the simulation about twice as fast (fewer cores work too; see [Reproducibility and speed](docs/reproducibility.md)). Results go to `Results/` next to `run.jl`.
 
-For futures of a single situation, use `n_simulations = 1`; with more, you can see whether what happens after `branch_day` depends on the history.
+Two files configure a run:
 
-**Picking histories.** `histories = [7]` runs only replicate 7, exactly as it was in a run with the same `gems_seed` and settings (replicate *h* always gets the *h*-th seed GEMS derives from `gems_seed`). So to branch a replicate you saw in an earlier run, take that run's settings and `gems_seed` from its `run_info/` (see [Rerunning a run](#rerunning-a-run)), set `histories` to that replicate, and choose `branch_day` and `n_futures`. Several are possible, e.g. `histories = [3, 7]`.
+- **`config/user_config.jl`**: the events, the transmission probability, and the GEMS configuration file and seed. See [Configuring events](docs/events.md).
+- **`run.jl`**: how to run it:
+  - `n_simulations`: number of replicates; `run_validation`: whether to check the results ([Validation](docs/validation.md));
+  - `population_file`, `synthetic`, `settings_file`: the population (see below);
+  - `compare_without_events`, `sweep_values`, `vary_per_replicate`, `branch_day`, `n_futures`, `histories`: experiments, all off by default. See [Experiments](docs/experiments.md).
 
-In the results, every future counts as a replicate; `event_results.csv` gets two extra columns, `history` (the replicate number) and `future`. Comparisons with and without events and sweeps work the same way: each history and future with events pairs with the same history and future without. Without branching and with `histories = nothing`, runs are exactly as before.
+## The population
 
-### Speed
+No population is shipped with the code.
 
-Measured on Saalekreis (434,591 people, 2 events, 120 days), 3 replicates:
-
-| | 1 thread | 8 threads |
-|---|---|---|
-| Start-up: packages, population file, setup | about 25 s | about 25 s |
-| First replicate (Julia compiles the code while running it) | about 58 s | about 42 s |
-| Each further replicate | about 12 s | about 6.5 s |
-| Saving, plots, validation (once per run) | about 20 s | about 16 s |
-| Whole run | 139 s | 102 s |
-
-So most of a short run is one-time cost, and each extra replicate is cheap. GEMS spreads the work of each simulated day over the threads Julia was started with, so start Julia with several, e.g. `julia -t 8`. The code prints a reminder when it runs on one thread. `-t 8` is a suggestion, not a requirement: on a computer with fewer cores it still runs correctly, just no faster than with as many threads as cores (Task Manager → Performance → CPU shows the number of logical processors). Going beyond about 8 threads gains little, since only part of each day's work can be split, and a run uses those cores fully, so other programs (or other people's work on a shared server) get slower meanwhile.
-
-The thread count changes the random numbers GEMS draws: a `gems_seed` repeats a run exactly only with the same number of threads (and the same Julia version), whatever the number of cores. To repeat a run, use the thread count it was run with, even on a smaller computer; to just get results fast, use your own core count. Plain `julia` (without `-t`) is not the same as `julia -t 1`: since Julia 1.12 it also starts an "interactive" thread, and GEMS's results differ between the two, even though both report 1 thread. `run_info.toml` records the thread count, the interactive thread count and the Julia version of every run, and the GEMS seed line printed with the results says to use the same thread count.
-
-**When changing the code:** with several threads, GEMS works on different settings at the same time. A contact or transmission function must therefore not keep state that several settings share, or threads can overwrite each other's changes and silently corrupt results. The current code is safe: `NegBinContacts` keeps no state, and `EventContacts` keeps its per-day attendee lists only for the GlobalSetting, which is a single setting, so one thread at a time uses them.
-
-A comparison or sweep loads the population file once and reuses it for all its runs, and compiles the code only once, so it costs little more than its replicates: e.g. a sweep over 7 event days with 20 replicates (160 replicates with the shared run without events) takes about 20 minutes on 8 threads.
-
-### Comparing with and without events
-
-The per-event results count who was infected *at* an event. That isn't the same as how many infections the events *cause*: some people infected at an event would have been infected later anyway (at home, at work), and the people they go on to infect at home or at work aren't counted as event infections. To measure the events' real effect, set `compare_without_events = true` in `run.jl`. The scenario then runs twice:
-
-1. **with events**, as usual;
-2. **without events**: the same events and attendees are set up, but nobody goes, so the events don't take place.
-
-Both runs use the same setup seed and the same GEMS seed (picked once if `gems_seed = nothing`), so replicate 1 of one run pairs with replicate 1 of the other, and so on. Before the first event day, nobody is at an event in either run, so each pair is identical up to that day, and every difference after it comes from the events. `comparison.txt` checks this and says so.
-
-Results go to `Results/compare_<n>sims_<date and time>/`:
-
-| File | Content |
-|---|---|
-| `with_events/`, `without_events/` | The two runs, each a normal run folder. Validation runs on `with_events/` only, since its checks assume the events took place. In `without_events/`, the per-event results show the would-be attendees on the event day. |
-| `comparison.txt` | Per metric (total infections, infections among attendees and among everyone else, peak height and day): the mean of each run, and the difference (with minus without) per pair, summarised as mean, std, min, max and a 95% interval for the mean difference. If that interval includes 0, the difference can't be told apart from chance yet: run more replicates. Also: the direct count of infections at events, and the extra infections per infection at events (above 1: the events cause more infections than happen at them; below 1: some event infections would have happened later anyway). |
-| `comparison.csv` | The same values for every pair. |
-| `comparison.png` | Daily new infections with and without events, and the cumulative extra infections over time (mean, with the range over pairs). |
-
-The effect of a few events can be small compared with the normal variation between runs, so a comparison may need more replicates than a normal run. It takes twice as long as a normal run with the same `n_simulations`.
-### Sweeps
-
-A sweep runs the comparison above once per value of one setting, to see how the events' effect depends on it. It's set in `run.jl` with three things:
-
-- `sweep_values`: the values to try, or `nothing` for no sweep (the default);
-- `sweep_label`: what the values are, for the output (e.g. `"event day"`);
-- `sweep`: a one-line function saying what changes for a value. It returns the settings to use, and everything it doesn't return stays as set in `run.jl` and `config/user_config.jl`.
-
-`run.jl` has two ready-made sweeps; uncomment the `sweep_values` line of the one you want:
-
-```julia
-# 1. when the festival (category 1, one draw) happens
-sweep_values = [10, 20, 30, 40, 50, 60, 70]
-sweep_label = "event day"
-sweep(day) = (; event_config = with_date(event_config, 1, day))
-
-# 2. the average transmission probability, with the std kept at 0.1
-sweep_values = [0.2, 0.25, 0.3, 0.35, 0.4]
-sweep_label = "mean transmission"
-sweep(m) = (; transmission_dist = Gamma(gamma_params(m, 0.1)...))
-```
-
-`with_date(event_config, category_id, day)` puts every draw of that category on `day`, so it only works for categories with `n_draws = 1`. For a recurring category, `with_date_range(event_config, category_id, (first_day, last_day))` moves its date window instead, e.g. `sweep(start) = (; event_config = with_date_range(event_config, 2, (start, start + 20)))`. A sweep can change anything else `run_scenario` takes the same way, e.g. a section's size, by building the `event_config` for that value.
-
-Every value uses the same setup seed and GEMS seed, so values differ only in the swept setting, not in luck. If `sweep` only changes `event_config` (as in sweep 1), the run without events is the same for every value, since nobody goes to any event and nothing else changes, so it runs only once: a sweep over 7 event days costs 8 runs, not 14. A sweep that changes anything else (as in sweep 2, which changes the whole epidemic) runs without events once per value. A changed transmission also moves the epidemic's peak, which changes how an event at a fixed date compares to the peak.
-
-Results go to `Results/sweep_<n>sims_<date and time>/`:
-
-| File | Content |
-|---|---|
-| `value_<value>/` | One folder per value: `with_events/` (a normal run folder), that value's `comparison.txt`, `.csv` and `.png`, and, without the shortcut, its own `without_events/`. |
-| `without_events/` | The run without events shared by every value (only with the shortcut). |
-| `sweep.txt` | One row per value: infections at events, extra infections (mean and 95% interval), extra among attendees and among everyone else, extra infections per event infection, and the change in peak height and day. |
-| `sweep.csv` | The same values. |
-| `sweep.png` | The extra infections (with the 95% interval) and the infections counted at events against the swept value, and the extra infections per event infection. |
-
-A sweep costs (number of values + 1) runs with the shortcut, or 2 × (number of values) without, each with `n_simulations` replicates. On Saalekreis a replicate takes about 6.5 s on 8 threads once the code is compiled (see [Speed](#speed)), so a sweep with 20 replicates per value takes minutes to tens of minutes. Try it with few replicates first.
-
-**Reproducibility.** There are two seeds:
-
-1. `seed` in the TOML sets the setup: the events, each person's transmission probability and who attends what. The same seed gives the same setup every time. Each of the three steps has its own random stream derived from `seed`, so changing one doesn't reshuffle the others: changing an event's size or `n_draws` leaves everyone's transmission probability unchanged, and changing `loyalty` or `core` leaves the events and transmission probabilities unchanged. With `vary_per_replicate`, the varying parts get one more stream per replicate, also derived from `seed`.
-2. `gems_seed` in `config/user_config.jl` sets the epidemic itself (initial infections, contacts, infections, disease course). With `gems_seed = nothing` (the default), every run uses a new random seed, so results differ between runs. The seed used is printed and saved at the top of `multievent_analysis.txt`. To repeat a run exactly, set `gems_seed` to that value and use the same number of Julia threads as that run (also saved there).
-
-Replicates within one run always differ from each other: GEMS derives a separate seed for each one from `gems_seed`.
-
-**Event dates.** GEMS simulates days 0 to `StopCriterion.limit` − 1 (in the TOML), so with `limit = 120` the last simulated day is 119. Every event's date must be on or before that day. If a category's `date_range` allows a later date, the run warns but still goes ahead. Results for that event will be inaccurate, since the simulation ends before that day is reached.
-
-**Reading validation output.** In the Epidemic State section, the rows Susceptible to Absent are sanity checks, not formal tests: they compare the attendees with the population as a whole, assuming attendees are a random sample, which core and loyal repeat attendees aren't. Only very large Z-scores there deserve a closer look. Observed values are means over replicates, so each of these Z-scores uses the spread of that mean (one run's std divided by √(number of replicates)); "n/a" means there's only one replicate, so there's no variance to compare against, not an error.
-
-The **Infected** row is a real test of the event code. For each replicate, it takes who was actually present and infectious on the event day, with their own `transmission_prob`, and computes the expected infections from the rules the events are meant to follow: each infectious attendee meets a number of different people in their section (drawn with the section's mean and std, capped at the number present), plus cross-section contacts if set, and infects each susceptible one with their own probability. It computes this directly from the distributions, without reusing the simulation's contact or transmission code, so if that code ever stops following the rules, observed and expected drift apart. Its Z-score is the mean of the per-replicate differences (observed minus expected) over their standard error, so it needs at least 2 replicates, and more replicates give a sharper test; |Z| above about 3 is worth a closer look. It doesn't test the inputs both share: the attendee lists, `transmission_prob` and the contact numbers in the config.
-
-### Rerunning a run
-
-Every run folder has a `run_info/` folder with what's needed to repeat that run:
-
-- copies of the files it was configured with: `config/user_config.jl`, `run.jl` and the TOML (for a `test/test.jl` run: `test/test.jl` and the TOML);
-- `run_info.toml`: the setup seed, the GEMS seed actually used, the number of replicates, the population and settings files (by path, not copied), the Julia version and thread count, and the code version (git commit and branch);
-- `uncommitted_changes.diff`, only if the code had changes not yet committed when the run started (new files never added to git are not included).
-
-To rerun:
-
-1. Check out the saved commit: `git checkout <git_commit>`. If there is an `uncommitted_changes.diff`, apply it: `git apply <run folder>/run_info/uncommitted_changes.diff`.
-2. Copy the saved config files back: `user_config.jl` and the TOML into `config/`, `run.jl` (or `test.jl`) to where it was.
-3. In `config/user_config.jl` (or `test/test.jl`), set `gems_seed` to the `gems_seed` in `run_info.toml`. The saved copy has whatever was there when the run started, usually `nothing`.
-4. Make sure the population and settings files at the saved paths are the same ones, and run with the same number of threads (`julia -t <threads> ...`).
-
-## Files
-
-The project's files:
-
-| File | Purpose |
-|---|---|
-| `src/helpers.jl` | Structs and helper functions used by the other files, `run_scenario`, which runs one scenario from start to finish (see [What happens during a run](#what-happens-during-a-run)), `run_comparison`, which runs it with and without events, and `run_sweep` with its helpers `with_date` and `with_date_range`. |
-| `config/user_config.jl` | The TOML to use, transmission probability, `gems_seed` and the event definitions. |
-| `run.jl` | The run settings (replicates, validation, population and settings files); calls `run_scenario` to run the simulations. |
-| `src/population.jl` | Creates the events and assigns the population to them. |
-| `src/contacts.jl` | Contact sampling for the whole simulation: normal settings (household, office, etc.) and events each use their own logic. |
-| `src/transmission.jl` | Transmission function for the whole simulation: each infecter's own probability, and recovered people are immune. |
-| `src/analysis.jl` | Output: text metrics and plots, the comparison with and without events, and the sweep summary. |
-| `src/validation.jl` | Checks and extra metrics to confirm the code works correctly. |
-| `config/config_concert_covid.toml` | The standard GEMS configuration file. |
-| `test/test.jl` | Quick end-to-end check on a small synthetic population, with its own small config. See [Quick test](#quick-test). |
-
-In the TOML, the transmission function's `parameters` table is empty on purpose: GEMS requires the table, but transmission uses each person's own probability, set in `config/user_config.jl`. Likewise, the GlobalSetting's contact method has no parameters, since event contact rates are set per section in `config/user_config.jl`.
+- **By default** (`population_file = nothing`), each run uses a **synthetic population** generated by GEMS, of `synthetic = (; n = 100_000)` people (GEMS also takes `avg_household_size`, `avg_office_size`, `avg_school_size`). It's good for trying things out, but not representative of a real place.
+- **For realistic results, use your own population**: set `population_file` to a `.jld2` file holding a table under `"data"`, with at least `id`, `age`, `sex` (1 or 2) and the GEMS setting ids (`household`, and optionally `office`, `schoolclass`, `municipality`), like the GEMS population files. Optionally, `settings_file` adds its GEMS settings file (coordinates, region codes, schools and workplaces; slower). Put your files in `data/`: git ignores `.jld2` files there.
+- **To keep your own settings out of git**, copy `run.jl` to a file whose name starts with `my_`, e.g. `my_run_myregion.jl`, and set your population there. Git ignores `my_*.jl` files; run it like `run.jl`.
 
 ## Configuring events
 
-In `config/user_config.jl` you first set `transmission_dist`, the distribution each person's transmission probability (chance of infecting a contact) is drawn from, once at the start. Any distribution from Distributions.jl works; values are kept within [0, 1]. Examples:
+A small example (the full description of every field is in [Configuring events](docs/events.md)):
 
 ```julia
-transmission_dist = Gamma(gamma_params(0.3, 0.1)...)   # by mean and std (the default)
-transmission_dist = Beta(beta_params(0.3, 0.1)...)     # by mean and std, always within [0, 1]
-transmission_dist = Dirac(0.3)                          # the same for everyone
-```
+festival = Category(
+    id = 1, name = "festival",
+    date_range = (40, 60),           # the days it can happen on
+    n_draws = 1,                     # how often it recurs
+    sections = [EventSection(id = 1, name = "standing", n_range = (800, 1000),
+                             mean_contacts = 12.0, std_contacts = 18.0)],
+    min_age = 18,
+    core = 0.0, loyalty = 0.0,       # returning attendees across draws
+)
 
-Then you create categories of events. Each category has these fields:
-
-- **`id`**: unique id used for internal processing. `validate_config` stops with an error if two categories share an id.
-- **`name`**: makes the outputs easier to read. Should also be unique, since some output filenames are built from it, and a collision overwrites one category's output with another's.
-- **`date_range`**: the days on which events of this category can happen.
-  - Events of the same category cannot happen on the same day. The code picks different dates, but the range needs enough days.
-  - Different categories can land on the same date by coincidence. In that case all events of that date are filled together: core first, then loyalty, then random. So a category can never take another's core members, and its random fill can't take another's loyal attendees.
-  - A person can attend events from more than one category on different days. Being core or loyal to one category doesn't exclude someone from being randomly drawn into another's events.
-- **`sections`**: at least one per category. This is where the size and number of contacts are set. Multiple sections must have unique ids (`validate_config` stops with an error otherwise), and every event of the category has all its sections.
-- **`n_draws`**: how many times the category recurs. The total number of events created is `n_draws` times the number of sections, not `n_draws` itself. A negative value is an error; 0 gives a warning and creates no events for that category.
-- **`min_age`, `max_age`**: minimum and maximum age of attendees. `age_boundaries` (see below) are shared across categories, but since the min and max age filter who is eligible first, the same boundary can cover a different real age range per category.
-- **`age_weights`**: the age distribution of attendees, within the min and max ages. These are weights and don't have to sum to 1, so the real distribution at the event may differ slightly.
-- **`sex_weights`**: the sex distribution of attendees. Also weights, with the same caveat.
-- **`core`**: the fraction of each draw's attendees who attend every draw of the category.
-  - It is calculated on the smallest draw generated (all sections together), so all core members always fit. With `section_mode = :section` it is calculated on each section's smallest size instead, so every home section fits. This gives a slightly smaller core.
-  - Core members are picked following the demographic weights.
-  - A person can be core for at most one category.
-  - With several sections, placement depends on `section_mode`.
-- **`loyalty`**: the fraction of the remaining non-core spots reserved for people who already attended at least one non-core event of the category. This pool only grows and never expires. Selection follows the demographic weights; attending more times doesn't give extra weight. With several sections, placement depends on `section_mode`.
-- **`cross_section_mean_contacts`**, **`cross_section_std_contacts`**: contacts a person has with people in other sections of the same event. The same value applies to all sections, and these contacts come on top of the within-section ones.
-- **`section_mode`**: where core and loyal members go when there are several sections. `:event` (the default) places them in a random section at every draw, in proportion to section size. `:section` gives core members a fixed home section, and loyal attendees go back to their last section.
-
-Core members are picked once per category, before any of its events are processed. The same core then attends every event of the category, from the first one on. Events are filled date by date: core of every event, then loyalty of every event, then random fill of every event. Anyone filled by loyalty or random fill becomes loyalty-eligible for that category's later events. If not enough eligible people are left on a day to fill an event (e.g. small population, strict age limits, several big events on the same day), the event is filled as far as possible and a warning is printed.
-
-`validate_config` runs automatically once `event_config` is built. It catches common mistakes like wrong-length weight lists, inverted ranges, `core` outside [0, 1], negative `n_draws`, and duplicate category or section ids. Not everything is checked; see its comments in `src/helpers.jl` for the full list.
-
-Finally, `event_config` lists which categories are included in the simulation, so categories can easily be switched on or off for testing. It also holds `age_boundaries`, used to group ages the same way for all events, and `age_dist` and `sex_dist`, used for any category without its own `age_weights` or `sex_weights`.
-
-### Staged categories
-
-A `StagedCategory` is a gathering made of several **stages on the same day**, where people can attend more than one stage: e.g. restaurants that feed a football match. Each stage has one or more **venues** (several restaurants, or one or more stadiums); a venue is a single group, where the people present meet each other, with no contacts to other venues and no internal sections.
-
-```julia
-category_3 = StagedCategory(
-    id = 3,
-    name = "football",
-    date_range = (20, 50),
-    n_draws = 2,
+football = StagedCategory(           # stages on the same day, people can attend several
+    id = 2, name = "football",
+    date_range = (20, 50), n_draws = 2,
     stages = [
-        Stage(name = "match", min_age = 6,
-              venues = [Venue(name = "stadium", n_range = (20000, 25000), mean_contacts = 10.0, std_contacts = 15.0)]),
-        Stage(name = "restaurants", overlap = 0.3, min_age = 16,
+        Stage(name = "match", venues = [Venue(name = "stadium", n_range = (20000, 25000), mean_contacts = 10.0, std_contacts = 15.0)]),
+        Stage(name = "restaurants", overlap = 0.3,   # 30% of their guests come from the match
               venues = [Venue(name = "restaurant$i", n_range = (40, 80), mean_contacts = 4.0, std_contacts = 6.0) for i in 1:10]),
-    ]
+    ],
 )
 ```
 
-(This example is in `config/user_config.jl`, commented out.)
+## What you get
 
-- **`StagedCategory`**: `id`, `name`, `date_range` and `n_draws` as for a `Category`, and its `stages` in order. All stages of a draw are on the same day. There is no core or loyalty: every draw draws its attendees afresh.
-- **`Stage`**: `name`, `venues`, `overlap`, and its own `min_age`, `max_age`, `age_weights` and `sex_weights` (as for a `Category`; without weights, `age_dist` and `sex_dist` are used).
-- **`overlap`**: the share of the stage's attendees taken from the **previous** stage's attendees of the same draw; it must be 0 for the first stage. The order of the stages decides the direction: in the example, 30% of the restaurant guests come from the match and 70% didn't go to it. With the restaurants first and the match second, the match's overlap would say how many match-goers come from the restaurants instead. If the previous stage hasn't enough eligible people, the overlap is filled as far as possible and a warning is printed.
-- **`Venue`**: `name`, `n_range` (its size, drawn anew at every draw), and the contacts within it (`mean_contacts`, `std_contacts`, as for a section).
-
-How the attendees are drawn, per draw and stage: first the overlap from the previous stage, then the rest from people at no earlier stage of the draw and at no other event that day, following the stage's demographic weights; then everyone is spread over the stage's venues in proportion to their sizes, anew at every draw. Nobody is at two venues of the same stage. On a day shared with normal categories, staged categories are filled after them.
-
-During the simulation each stage gets its own pass through the GlobalSetting (see 4_Contacts below), so the results can tell the stages apart: the per-event results are per venue, `multievent_analysis.txt` gets a summary of the infections per stage, and the validation checks the overlap reached and the expected infections per venue. Two people who meet both at a restaurant and at the stadium have two chances of infection, one per stage. `with_date` and `with_date_range` work for staged categories too (`with_date` only with `n_draws = 1`), so their dates can be swept like any other category's.
-
-## What happens during a run
-
-`run.jl` loads `src/helpers.jl` and `config/user_config.jl`, then the rest of the code, and calls `run_scenario` (in `src/helpers.jl`), which goes through the steps below in order. `test/test.jl` calls the same function, so the steps exist in one place only. Each call starts from a fresh copy of the population and recreates the setup's random streams from the setup seed, so calling it twice in one Julia session with the same seeds gives the same events, attendees and results.
-
-**3_Population** turns the categories into actual events (each with a date and a size), prepares the population chosen in `run.jl` (`population_file`), and assigns people to every event following the rules above. Nothing here needs to be configured.
-
-Each person's transmission probability is drawn once, at the very start, from `transmission_dist` in `config/user_config.jl`, kept within [0, 1]. It never changes afterward, regardless of which events that person attends. A few fields are added to every person so the rest of the code knows who attended what:
-
-- `category_ids`, `draw_ids`, `section_ids`: which category, draw and section they attended, one entry per event attended.
-- `event_dates`: the date of each event attended.
-- `mean_event_contacts`, `std_event_contacts`: their within-section contact rate at each event.
-- `cross_section_mean_contacts`, `cross_section_std_contacts`: the same, for contacts with people in other sections of the same event.
-- `transmission_prob`: fixed at the start, not tied to any event.
-
-**4_Contacts** defines how many contacts a person has in every setting, both normal ones and events. For events it handles both within-section and cross-section contacts. Attendance is fixed before the simulation, but on the event day people who are dead, severely ill or in hospital don't go: they get no event contacts and nobody can draw them as a contact. People with milder symptoms, or none yet, still go. In the per-event results, these people are counted in the **Absent** row; all other rows (susceptible, infectious, exposed, recovered) only count attendees who were actually there. It also contains `daily_global_setting!`, which `run_scenario` passes to GEMS as the batch's `setup`: before each simulation starts, it builds one list of attendees per event day and makes GEMS swap in the right list at the end of every day. It also stops with an error if the event attendances GEMS holds don't add up to those in the population table, since missing event columns would otherwise fail silently (no event contacts at all). With staged categories, each stage gets its own pass: GEMS's own pass of the day holds the normal events and every staged category's first stage; at the end of the day (still the same day), each further stage is put in the GlobalSetting and GEMS's infection step runs once more, and who gets infected in which pass is recorded. The order of the passes doesn't matter for who can infect whom, since people infected today only become infectious days later. For the run without events (see [Comparing with and without events](#comparing-with-and-without-events)), it leaves the list empty on every day.
-
-**5_Transmission** decides whether a contact results in an infection: in every setting, events included, with the infecter's own `transmission_prob`, unless the contact has already recovered (they are then immune). Who meets whom at events is decided entirely in 4_Contacts, so there's no separate "same event" check here; the Infected row of the validation tests that event contacts follow the rules.
-
-With these in place, `run_scenario` samples the events, prepares and assigns the population, and runs the GEMS simulation.
-
-**6_Analysis** runs automatically afterwards and produces the text metrics and the plots (epidemic curves, cases by setting, per-event SEIR bars, infected boxplots), saved to the `Results` folder. Per event, the text output gives two rates, averaged over replicates: the share of attendees present (assigned minus absent) who were infected at the event, and the attack rate among susceptible attendees (those present who could still be infected when they arrived). The global section also gives the offspring dispersion k: how unevenly onward infections are spread across infected people (lower k means more superspreading). People infected near the end of the simulation are left out of k, because the simulation ends before they finish infecting others. How many days are left out is measured from each run itself: it's the time within which 95% of infected people stopped being able to infect (until recovery, death or hospital admission), so it follows the pathogen settings in the TOML. The output says how many days that was.
-
-**7_Validation** runs if `run_validation` is `true`. It checks the outcomes (assignment counts, compartment totals, demographics, epidemic state) against what's expected. Not required for a normal run, but useful to catch mistakes. Its output is shown on screen and saved as `validation.txt`.
-
-### What a run folder contains
+Each run writes a folder `Results/run_<n>sims_<date and time>/`:
 
 | File | Content |
 |---|---|
-| `multievent_analysis.txt` | Seeds, global metrics (infections, attack rate, R0, offspring k) and, per event, each compartment summarised across replicates (mean, std, min, quartiles, max) plus the two rates. With staged categories, also the attendees present and infected per stage, per draw and over all draws. |
-| `validation.txt` | The validation output (only if `run_validation` is `true`) |
-| `events.csv` | One row per event: id, name, category, draw, section, date, size, contact rates. With staged categories, one row per venue, with a `stage_id` column (the venue's number is in `section_id`). |
-| `event_results.csv` | One row per replicate and event, with every compartment count before summarising. With branching or picked histories, also `history` and `future` columns. |
-| `attendance.jld2` | Who was assigned to each event (`"attendees"`: event id => person ids) and each category's core group (`"core_groups"`: category id => person ids). With `vary_per_replicate` set (not `[]`), both are a list with one such entry per replicate. |
-| `*.png` | The plots |
-| `run_info/` | Everything needed to rerun the run (see [Rerunning a run](#rerunning-a-run)) |
+| `multievent_analysis.txt` | Global metrics (infections, attack rate, R0, offspring k) and, per event, who was susceptible, infectious, … and infected at the event, over all replicates |
+| `*.png` | Epidemic curves, cases by setting, infections per event |
+| `events.csv`, `event_results.csv`, `attendance.jld2` | The events, the per-replicate results, and who attended what |
+| `validation.txt` | The checks of the run |
+| `run_info/` | Everything needed to repeat the run exactly (seeds, configuration, code version) |
 
-The full infection logs are not saved (about 150 MB per replicate for Saalekreis).
+Comparisons and sweeps add their own summaries; see [Experiments](docs/experiments.md). Every file is described in [How it works](docs/how_it_works.md#what-a-run-folder-contains).
+
+## Checking the code
+
+After changing the code, run the quick test (a small synthetic population, about 2 minutes):
+
+```
+julia -t 8 test/test.jl
+```
+
+## Project layout
+
+```
+run.jl                 the script to run (copy it to my_*.jl for your own settings)
+config/                user_config.jl (events, transmission, seeds) and the GEMS configuration (TOML)
+src/                   the MassGatherings package
+test/test.jl           the quick test
+data/                  your population files (not in git)
+docs/                  the documentation
+Results/               the results (not in git)
+```
+
+## Documentation
+
+- [Configuring events](docs/events.md): categories, sections, core and loyalty, staged categories, the GEMS configuration
+- [Experiments](docs/experiments.md): comparing with and without events, sweeps, per-replicate setups, branching
+- [How it works](docs/how_it_works.md): what happens during a run, the code files, populations, all outputs
+- [Validation](docs/validation.md): the checks of a run and the quick test
+- [Reproducibility and speed](docs/reproducibility.md): seeds, threads, timings, rerunning a run
