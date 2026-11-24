@@ -232,8 +232,10 @@ function plot_infected_boxplot(event_results, events, event_config, run_folder)
     cat_name = Dict(c.id => (isempty(c.name) ? "category $(c.id)" : c.name)
                     for c in event_config.categories)
 
+    # wider with more events, ids slanted so they don't overlap
     p = plot(title="Infected at Event", xlabel="Event", ylabel="Infected", dpi=300,
-        legend=:outertopright)
+        legend=:outertopright, size=(max(800, 50 * length(events) + 200), 500),
+        xrotation=45, bottom_margin=8Plots.mm, left_margin=5Plots.mm)
 
     labelled = Set{Int}()   # categories already in the legend
     for e in events

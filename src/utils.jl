@@ -112,9 +112,10 @@ function add_event_vlines!(p, events)
         event.date in seen_dates && continue
         push!(seen_dates, event.date)
 
-        same_date_ids = [e.id for e in events if e.date == event.date]
-        label = length(same_date_ids) > 1 ?
-                "Events $(join(same_date_ids, ", ")) (day $(event.date))" :
+        # a count, not every id: a long label squeezes the plot (and makes GKS complain)
+        n_same_date = count(e -> e.date == event.date, events)
+        label = n_same_date > 1 ?
+                "Day $(event.date): $n_same_date events" :
                 "Event $(event.id) (day $(event.date))"
 
         vline!(p, [event.date],

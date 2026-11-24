@@ -99,8 +99,9 @@ end
 ## === Validation ===
 
 # Stops with an error on a configuration mistake (n_draws = 0 only warns).
-# Called by config/user_config.jl, and by run_scenario before every run.
-function validate_config(event_config::EventConfig)
+# Called by config/user_config.jl, and by run_scenario before every run
+# (quietly: no warning or OK line, as user_config.jl already printed them).
+function validate_config(event_config::EventConfig; quiet::Bool = false)
     age_boundaries = event_config.age_boundaries
     isempty(age_boundaries) &&
         error("age_boundaries is empty; it needs at least one age, e.g. [45, 65].")
@@ -129,7 +130,7 @@ function validate_config(event_config::EventConfig)
     for category in event_config.categories
         category.n_draws >= 0 ||
             error("Category $(category.name): n_draws ($(category.n_draws)) must not be negative.")
-        category.n_draws == 0 &&
+        !quiet && category.n_draws == 0 &&
             @warn "Category $(category.name): n_draws is 0, so it creates no events."
         category.date_range[1] <= category.date_range[2] ||
             error("Category $(category.name): date_range $(category.date_range) is invalid (start > end).")
@@ -179,7 +180,7 @@ function validate_config(event_config::EventConfig)
         error("Several events would be named $(join(repr.(duplicates), ", ")), so their plots would " *
               "overwrite each other: give the categories (or their sections, stages or venues) different names.")
 
-    println("Config validated OK.")
+    quiet || println("Config validated OK.")
 end
 
 # The same for a StagedCategory's stages and venues.

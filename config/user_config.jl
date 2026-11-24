@@ -60,21 +60,21 @@ category_2 = Category(
 # A staged category (docs/events.md): a match, then 10 restaurants, 30% of
 # whose guests come from the match. To use it, uncomment it and add it to
 # `categories` below.
-# category_3 = StagedCategory(
-#     id = 3,
-#     name = "football",
-#     date_range = (20, 50),
-#     n_draws = 2,
-#     stages = [
-#         Stage(name = "match", min_age = 6,
-#               venues = [Venue(name = "stadium", n_range = (20000, 25000), mean_contacts = 10.0, std_contacts = 15.0)]),
-#         Stage(name = "restaurants", overlap = 0.3, min_age = 16,
-#               venues = [Venue(name = "restaurant$i", n_range = (40, 80), mean_contacts = 4.0, std_contacts = 6.0) for i in 1:10]),
-#     ]
-# )
+ category_3 = StagedCategory(
+     id = 3,
+     name = "football",
+     date_range = (45, 45),
+     n_draws = 1,
+     stages = [
+         Stage(name = "match", min_age = 6,
+               venues = [Venue(name = "stadium", n_range = (20000, 25000), mean_contacts = 10.0, std_contacts = 15.0)]),
+         Stage(name = "restaurants", overlap = 0.3, min_age = 16,
+               venues = [Venue(name = "restaurant$i", n_range = (40, 80), mean_contacts = 4.0, std_contacts = 6.0) for i in 1:2]),
+     ]
+ )
 
 event_config = EventConfig(
-    categories = [category_1, category_2],
+    categories = [category_1, category_2, category_3],
     age_boundaries = [45, 65],
     age_dist = [0.211, 0.347, 0.442],
     sex_dist = [[0.420, 0.580], [0.395, 0.605], [0.426, 0.574]]

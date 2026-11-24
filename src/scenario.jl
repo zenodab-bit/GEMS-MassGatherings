@@ -146,7 +146,7 @@ function run_scenario(event_config::EventConfig;
     isnothing(gems_seed) || gems_seed isa Integer ||
         error("gems_seed must be nothing or an integer, got $(repr(gems_seed)).")
     # here too, so configs built in code (e.g. by a sweep) are checked
-    validate_config(event_config)
+    validate_config(event_config; quiet = true)
     streams = setup_streams(setup_seed)
 
     # --- events ---
