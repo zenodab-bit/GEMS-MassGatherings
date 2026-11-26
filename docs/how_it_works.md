@@ -51,10 +51,12 @@ The package is compiled once and cached; the first start after a change in `src/
 |---|---|
 | `multievent_analysis.txt` | Seeds, global metrics (infections, attack rate, R0, k), and per event each compartment over replicates plus the two rates; with staged categories, a per-stage summary |
 | `validation.txt` | The checks (with `run_validation`) |
-| `events.csv` | One row per event (per venue for staged categories, with `stage_id`) |
+| `events.csv` | One row per event (per venue for staged categories, with `stage_id`), with its full `name` and its short `label` used in plots |
 | `event_results.csv` | One row per replicate and event: `assigned` (people actually assigned) and every compartment; with branching or histories, `history` and `future` |
 | `attendance.jld2` | `"attendees"` (event id => person ids) and `"core_groups"` (category id => person ids), one per replicate with `vary_per_replicate` |
-| `*.png` | Epidemic curves, cases by setting, infected at events, per section over draws, one chart per event |
+| `*.png` | Epidemic curves (`epidemic_overview`), cases by setting, infected at each event (`infected_boxplot`) |
+| `infected_by_section/` | Per section or venue, the share of susceptible attendees infected at each draw; files named `<category>_<section>` or `<category>_<stage>_<venue>` |
+| `seir/` | Per event, the attendees' states on the event day; files named after the event's full name |
 | `run_info/` | What's needed to rerun ([Reproducibility](reproducibility.md#rerunning-a-run)) |
 
 Infection logs aren't saved (about 150 MB per replicate for Saalekreis).

@@ -201,7 +201,7 @@ function plot_sweep(summary, sweep_label, filename)
     plot!(p2, x, summary.extra_per_event_infection, color=PLOT_COLORS.blue, linewidth=2, marker=:circle)
     hline!(p2, [1], color=:gray, linestyle=:dot)
 
-    p = plot(p1, p2, layout=(2, 1), size=(1000, 800), dpi=300)
+    p = plot(p1, p2, layout=(2, 1), size=(1000, 800), dpi=300; PLOT_MARGINS...)
     savefig(p, filename)
 end
 

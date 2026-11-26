@@ -67,7 +67,7 @@ Each run writes `Results/run_<n>sims_<date and time>/`:
 | File | Content |
 |---|---|
 | `multievent_analysis.txt` | Global metrics, and per event the attendees' states and infections, over all replicates |
-| `*.png` | Epidemic curves, cases by setting, infections per event |
+| `*.png`, `infected_by_section/`, `seir/` | Epidemic curves, cases by setting, infections per event, per section or venue, and each event's states |
 | `events.csv`, `event_results.csv`, `attendance.jld2` | The events, per-replicate results, who attended what |
 | `validation.txt` | The checks of the run |
 | `run_info/` | What's needed to repeat the run |

@@ -59,10 +59,15 @@ function sample_events(event_config::EventConfig, rng)
                     end
                 end
                 name = isempty(parts) ? id : join(parts, "_")
+                # short label: the section's name, else the category's
+                base = !isempty(section.name) ? section.name :
+                       isempty(category.name) ? id :
+                       length(category.sections) > 1 ? "$(category.name)_sec$(section.id)" : category.name
 
                 push!(events, Event(
                     id=id,
                     name=name,
+                    label=with_draw(base, draw, category.n_draws),
                     category_id=category.id,
                     draw_id=draw,
                     section_id=section.id,
@@ -77,7 +82,18 @@ function sample_events(event_config::EventConfig, rng)
         end
     end
 
-    return events
+    return unique_labels(events)
+end
+
+# A short label with the draw number when the category has several draws.
+with_draw(base, draw, n_draws) = n_draws > 1 ? "$(base)_$(draw)" : base
+
+# Labels shared by several events (e.g. two categories with a section
+# "seated") are replaced by those events' full names, which are unique.
+function unique_labels(events)
+    labels = [e.label for e in events]
+    clashes = Set(l for l in labels if count(==(l), labels) > 1)
+    return [e.label in clashes ? reconstruct(e, label = e.name) : e for e in events]
 end
 
 # The same for a StagedCategory: one Event per venue of every stage, all on
@@ -107,9 +123,15 @@ function sample_staged_events(category::StagedCategory, rng)
             category.n_draws > 1 && push!(parts, "draw$(draw)")
             push!(parts, isempty(stage.name) ? "stage$(s)" : stage.name)
             length(stage.venues) > 1 && push!(parts, isempty(venue.name) ? "venue$(v)" : venue.name)
+            # short label: the venue's name, else the stage's, else the full name
+            venue_part = length(stage.venues) > 1 ? "_venue$(v)" : ""
+            base = !isempty(venue.name) ? venue.name :
+                   !isempty(stage.name) ? stage.name * venue_part :
+                   (isempty(category.name) ? "category$(category.id)" : category.name) * "_stage$(s)" * venue_part
             push!(events, Event(
                 id="$(category.id)_$(draw)_$(s)_$(v)",
                 name=join(parts, "_"),
+                label=with_draw(base, draw, category.n_draws),
                 category_id=category.id,
                 draw_id=draw,
                 section_id=v,

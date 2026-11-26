@@ -307,7 +307,7 @@ function run_scenario(event_config::EventConfig;
 
     println("\nSimulation complete.")
     run_analysis(; aggregated, event_results, events, event_config, bd, run_folder,
-                 setup_seed, gems_seed_used, last_day)
+                 setup_seed, gems_seed_used, last_day, events_on)
 
     # written to validation.txt, then shown on screen
     if run_validation

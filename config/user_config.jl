@@ -58,8 +58,7 @@ category_2 = Category(
 )
 
 # A staged category (docs/events.md): a match, then 10 restaurants, 30% of
-# whose guests come from the match. To use it, uncomment it and add it to
-# `categories` below.
+# whose guests come from the match.
  category_3 = StagedCategory(
      id = 3,
      name = "football",
@@ -69,7 +68,7 @@ category_2 = Category(
          Stage(name = "match", min_age = 6,
                venues = [Venue(name = "stadium", n_range = (20000, 25000), mean_contacts = 10.0, std_contacts = 15.0)]),
          Stage(name = "restaurants", overlap = 0.3, min_age = 16,
-               venues = [Venue(name = "restaurant$i", n_range = (40, 80), mean_contacts = 4.0, std_contacts = 6.0) for i in 1:2]),
+               venues = [Venue(name = "restaurant$i", n_range = (40, 80), mean_contacts = 4.0, std_contacts = 6.0) for i in 1:10]),
      ]
  )
 

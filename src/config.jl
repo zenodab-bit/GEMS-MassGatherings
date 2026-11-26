@@ -93,6 +93,7 @@ end
     cross_section_mean_contacts::Float64 = 0.0
     cross_section_std_contacts::Float64 = 0.0
     stage_id::Int = 0           # the stage (1, 2, ...); 0 for a normal Category
+    label::String = name        # short, for plots: the section's or venue's own name (see events.jl)
 end
 
 

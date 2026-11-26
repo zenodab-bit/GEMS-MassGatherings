@@ -192,7 +192,7 @@ function plot_comparison(daily_with, daily_without, events, filename)
     hline!(p2, [0], color=:gray, linestyle=:dot, label="")
     add_event_vlines!(p2, events)
 
-    p = plot(p1, p2, layout=(2, 1), size=(1000, 800), dpi=300)
+    p = plot(p1, p2, layout=(2, 1), size=(1000, 800), dpi=300; PLOT_MARGINS...)
     savefig(p, filename)
     println("Saved: comparison.png")
 end

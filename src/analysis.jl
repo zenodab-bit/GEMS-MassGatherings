@@ -133,8 +133,8 @@ function plot_epidemic_overview(bd, events, run_folder)
     p3 = gemsplot(bd, type=:EffectiveReproduction)
     add_event_vlines!(p3, events)
 
-    p_overview = plot(p1, p2, p3, layout=(3, 1), size=(800, 900), dpi=300,
-        legend=:outertopright)
+    p_overview = plot(p1, p2, p3, layout=(3, 1), size=(1000, 900), dpi=300,
+        legend=:outertopright; PLOT_MARGINS...)
     savefig(p_overview, "$run_folder/epidemic_overview.png")
     println("Saved: epidemic_overview")
 end
@@ -180,7 +180,7 @@ function plot_cases_by_setting(bd, events, run_folder)
     end
 
     p = plot(title="Cases by Setting", xlabel="Tick", ylabel="Daily Cases", dpi=300,
-        legend=:outerright, size=(1400, 600))
+        legend=:outerright, size=(1400, 600); PLOT_MARGINS...)
     for (s, series_list) in all_setting_cases
         isempty(series_list) && continue
         mat = hcat(series_list...)
@@ -201,11 +201,13 @@ function plot_cases_by_setting(bd, events, run_folder)
 end
 
 
-# One compartment bar chart per event, seir_<event name>.png.
+# One compartment bar chart per event, seir/<event name>.png.
 function plot_event_seir(aggregated, events, run_folder)
+    isempty(events) && return
     fields = [:susceptible, :infectious, :exposed, :recovered, :absent]   # absent: dead, severe or hospitalised
     colors = [PLOT_COLORS.skyblue, PLOT_COLORS.vermillion, PLOT_COLORS.orange,
               PLOT_COLORS.green, PLOT_COLORS.black]
+    folder = mkpath(joinpath(run_folder, "seir"))
 
     for event in events
         metrics = aggregated[event.id]
@@ -213,14 +215,15 @@ function plot_event_seir(aggregated, events, run_folder)
 
         p = bar(string.(fields), values,
             color=colors,
-            title="SEIR State — $(event.name) Day $(event.date)",
+            title="SEIR state at the event (mean over replicates)\n$(event.label), day $(event.date)",
+            titlefontsize=11,
             xlabel="Compartment",
             ylabel="Count",
             legend=false,
-            dpi=300)
-        savefig(p, "$run_folder/seir_$(event.name).png")
-        println("Saved: seir_$(event.name)")
+            dpi=300; PLOT_MARGINS...)
+        savefig(p, joinpath(folder, "$(event.name).png"))
     end
+    println("Saved: seir/ ($(length(events)) plots)")
 end
 
 
@@ -232,20 +235,25 @@ function plot_infected_boxplot(event_results, events, event_config, run_folder)
     cat_name = Dict(c.id => (isempty(c.name) ? "category $(c.id)" : c.name)
                     for c in event_config.categories)
 
-    # wider with more events, ids slanted so they don't overlap
+    # event i at x = i with its short label as tick label (text positions
+    # would let Plots drop every other label); wider with more events,
+    # labels slanted, with room below for the longest one
+    longest = maximum((length(e.label) for e in events); init = 0)
     p = plot(title="Infected at Event", xlabel="Event", ylabel="Infected", dpi=300,
-        legend=:outertopright, size=(max(800, 50 * length(events) + 200), 500),
-        xrotation=45, bottom_margin=8Plots.mm, left_margin=5Plots.mm)
+        legend=:outertopright, size=(max(800, 50 * length(events) + 200), 450 + 5 * longest),
+        xticks=(1:length(events), [e.label for e in events]), xrotation=45,
+        xlims=(0.3, length(events) + 0.7);
+        merge(PLOT_MARGINS, (; bottom_margin=(6 + 1.3 * longest) * Plots.mm))...)
 
     labelled = Set{Int}()   # categories already in the legend
-    for e in events
+    for (i, e) in enumerate(events)
         vals = [r[e.id].infected_at_event for r in event_results]
         label = e.category_id in labelled ? "" : cat_name[e.category_id]
         push!(labelled, e.category_id)
         if length(event_results) > 1
-            boxplot!(p, [e.id], vals, color=cat_color[e.category_id], label=label)
+            boxplot!(p, fill(i, length(vals)), vals, color=cat_color[e.category_id], label=label)
         else
-            bar!(p, [e.id], vals, color=cat_color[e.category_id], label=label)
+            bar!(p, [i], vals, color=cat_color[e.category_id], label=label, bar_width=0.6)
         end
     end
 
@@ -253,27 +261,30 @@ function plot_infected_boxplot(event_results, events, event_config, run_folder)
     println("Saved: infected_boxplot")
 end
 
-# One panel per (category, section) or (stage, venue), one box per draw at
-# its date: the attack rate among susceptible attendees (rate=true), or
-# counts. Runs with no susceptible attendees are skipped.
+# One plot per (category, section) or (stage, venue) in infected_by_section/,
+# one box per draw at its date: the attack rate among susceptible attendees
+# (rate=true), or counts. Runs with no susceptible attendees are skipped.
 function plot_infected_by_section(event_results, events, event_config, run_folder; rate=true)
     isempty(events) && return
-    panels = []
-    for (cat_id, stage_id, sec_id) in unique((e.category_id, e.stage_id, e.section_id) for e in events)
+    folder = mkpath(joinpath(run_folder, "infected_by_section"))
+    groups = unique((e.category_id, e.stage_id, e.section_id) for e in events)
+    for (cat_id, stage_id, sec_id) in groups
         category = event_config.categories[findfirst(c -> c.id == cat_id, event_config.categories)]
-        cat_label = isempty(category.name) ? "category $cat_id" : category.name
+        cat_label = isempty(category.name) ? "category$cat_id" : category.name
         if category isa StagedCategory
             stage = category.stages[stage_id]
             venue = stage.venues[sec_id]
             stage_label = isempty(stage.name) ? "stage$stage_id" : stage.name
-            title = length(stage.venues) > 1 ?
-                    "$cat_label, $stage_label ($(isempty(venue.name) ? "venue$sec_id" : venue.name))" :
-                    "$cat_label, $stage_label"
+            venue_label = isempty(venue.name) ? "venue$sec_id" : venue.name
+            several = length(stage.venues) > 1
+            title = several ? "$cat_label, $stage_label ($venue_label)" : "$cat_label, $stage_label"
+            file = join([cat_label, stage_label, (several ? [venue_label] : [])...], "_")
         else
             section = category.sections[findfirst(s -> s.id == sec_id, category.sections)]
             sec_label = !isempty(section.name) ? section.name :
                         length(category.sections) > 1 ? "sec$sec_id" : ""
             title = isempty(sec_label) ? cat_label : "$cat_label ($sec_label)"
+            file = isempty(sec_label) ? cat_label : "$(cat_label)_$(sec_label)"
         end
 
         days = Int[]
@@ -285,37 +296,39 @@ function plot_infected_by_section(event_results, events, event_config, run_folde
             append!(days, fill(e.date, length(v)))
         end
 
-        if isempty(vals)
-            push!(panels, plot(title="$title: no susceptible attendees", legend=false, axis=false, grid=false))
-            continue
+        p = if isempty(vals)
+            plot(title="$title: no susceptible attendees", legend=false, axis=false, grid=false,
+                size=(800, 450), dpi=300)
+        else
+            # one replicate: points instead of boxes
+            plotfn = length(event_results) > 1 ? boxplot : scatter
+            plotfn(days, vals, title=title, xlabel="Event day",
+                ylabel=rate ? "% of susceptible attendees infected" : "Infected",
+                xticks=unique(days), legend=false, size=(800, 450), dpi=300; PLOT_MARGINS...)
         end
-
-        # one replicate: points instead of boxes
-        plotfn = length(event_results) > 1 ? boxplot : scatter
-        push!(panels, plotfn(days, vals, title=title, xlabel="Event day",
-            ylabel=rate ? "Infected (% of susceptible attendees)" : "Infected",
-            xticks=unique(days), legend=false))
+        savefig(p, joinpath(folder, "$file.png"))
     end
-
-    p = plot(panels..., layout=(length(panels), 1), size=(800, 350 * length(panels)), dpi=300)
-    savefig(p, "$run_folder/infected_by_section.png")
-    println("Saved: infected_by_section")
+    println("Saved: infected_by_section/ ($(length(groups)) plots)")
 end
 
 # === Run everything ===
 
-# Writes the text metrics and every plot into run_folder.
+# Writes the text metrics and every plot into run_folder. Without events
+# (events_on = false) the per-event plots are skipped: nobody is infected
+# at an event, and the attendees' states repeat the run with events.
 function run_analysis(; aggregated, event_results, events, event_config, bd,
-                        run_folder, setup_seed, gems_seed_used, last_day)
+                        run_folder, setup_seed, gems_seed_used, last_day, events_on = true)
     default(palette = PLOT_PALETTE)   # colour-blind-friendly, GEMS's plots too
 
     print_metrics(aggregated, event_results, events, bd, run_folder, setup_seed, gems_seed_used, last_day)
     write_stage_summary(event_results, events, event_config, run_folder)
     plot_epidemic_overview(bd, events, run_folder)
     plot_cases_by_setting(bd, events, run_folder)
-    plot_event_seir(aggregated, events, run_folder)
-    plot_infected_boxplot(event_results, events, event_config, run_folder)
-    plot_infected_by_section(event_results, events, event_config, run_folder)
+    if events_on
+        plot_event_seir(aggregated, events, run_folder)
+        plot_infected_boxplot(event_results, events, event_config, run_folder)
+        plot_infected_by_section(event_results, events, event_config, run_folder)
+    end
 
     println("\nAnalysis complete. Results saved to $run_folder")
 end

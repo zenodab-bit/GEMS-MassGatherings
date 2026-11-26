@@ -10,7 +10,7 @@ Results go to `Results/compare_<n>sims_<date and time>/`:
 
 | File | Content |
 |---|---|
-| `with_events/`, `without_events/` | The two runs (validation on `with_events/` only) |
+| `with_events/`, `without_events/` | The two runs (validation and the per-event plots on `with_events/` only) |
 | `comparison.txt` | Per metric (infections overall, among attendees and others, peak height and day): each run's mean and the paired difference, with a 95% interval (including 0: run more replicates). Also the extra infections per infection at events (above 1: onward spread; below 1: some would have happened anyway). |
 | `comparison.csv` | The values per pair |
 | `comparison.png` | Daily infections with and without events, and the cumulative difference |

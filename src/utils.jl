@@ -106,6 +106,9 @@ function print_metric_row(io, label, m)
 end
 
 # One dashed line per event date, labelled with every event on it.
+# Room around the plot area, so axis labels aren't cut off at the edges.
+const PLOT_MARGINS = (left_margin = 8Plots.mm, bottom_margin = 6Plots.mm, right_margin = 3Plots.mm)
+
 function add_event_vlines!(p, events)
     seen_dates = Set{Int}()
     for event in events
@@ -116,7 +119,7 @@ function add_event_vlines!(p, events)
         n_same_date = count(e -> e.date == event.date, events)
         label = n_same_date > 1 ?
                 "Day $(event.date): $n_same_date events" :
-                "Event $(event.id) (day $(event.date))"
+                "$(event.label) (day $(event.date))"
 
         vline!(p, [event.date],
             linestyle=:dash,

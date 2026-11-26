@@ -35,7 +35,7 @@ category_1 = Category(
 ```
 
 - **`id`**: unique.
-- **`name`**: event names are built from it and the draw and section names, and plots are named after them, so no two events may share a name.
+- **`name`**: event names are built from it and the draw and section names, and plot files are named after them, so no two events may share a name. In plots, events are shown by a short label: the section's (or for staged categories the venue's) own name, with the draw number when there are several draws, e.g. `seated_2`; the category name if the section has none; the full name if two events would share a label.
 - **`date_range`**: the days its draws can happen on, one draw per day, so it needs at least `n_draws` days. Categories can share a date; their events are then filled together (core, then loyalty, then random fill), so no category takes another's core or loyal attendees. People can attend different categories on different days.
 - **`sections`**: one or more, each with its own size (`n_range`, drawn at every draw) and contacts (`mean_contacts`, `std_contacts`: negative binomial, or Poisson when std² ≤ mean). Every draw has all sections.
 - **`n_draws`**: how often it recurs; 0 switches it off (with a warning).
